@@ -24,6 +24,21 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+type RpcArgs struct {
+	WorkerState int // either idle or complete when finish a task
+	TaskType int // either none (if idle) or map or reduce (once completed)
+	TaskNumber int //number corresponding to the task
+	Committed bool
+}
+
+type RpcReply struct {
+	TaskType int // the task type assigned from master to worker, none if all tasks has either in_process or completed state, if a task is un_scheduled, 
+	TaskNumber int
+	Filename string
+	NReduce int
+	ShouldCommit bool
+}
+
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
