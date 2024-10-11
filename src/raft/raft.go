@@ -305,41 +305,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 	}
 
-
 	return
-	
-	
-	/*else if args.Term == rf.currentTerm {
-		if rf.votedFor == not_voted || rf.votedFor == args.CandidateId {
-			var lastEntryTerm int = default_start_term
-			if rf.logEndIndex != sentinel_index {
-				lastEntryTerm = rf.logs[rf.lastLogIndex].term
-			}
-			if candidateIsMoreUpdated(args.LastLogTerm, args.LastLogIndex, lastEntryTerm, rf.logEndIndex) {
-				reply.Term = rf.currentTerm
-				reply.VoteGranted = true
-
-				rf.timeLastHeartBeat = time.Now()
-				rf.electionTimeOutMilliSecond = generateElectionTimeoutMilliSecond()
-				return;
-			}
-		}
-	} else {
-		var lastEntryTerm int = default_start_term
-		if rf.logEndIndex != sentinel_index {
-			lastEntryTerm = rf.logs[rf.lastLogIndex].term
-		}
-		if candidateIsMoreUpdated(args.LastLogTerm, args.LastLogIndex, lastEntryTerm, rf.logEndIndex) {
-			rf.currentTerm = args.Term
-
-			reply.Term = args.Term
-			reply.VoteGranted = true
-
-			rf.timeLastHeartBeat = time.Now()
-			rf.electionTimeOutMilliSecond = generateElectionTimeoutMilliSecond()
-			return;
-		}
-	}*/
 }
 
 //
@@ -515,7 +481,7 @@ func (rf *Raft) actAsLeader() {
 						// retry if 
 						// (1) the reply of heart beat was unsuccessful and
 						// (2) server is still a leader (receiving AppendEntried RPC from server of higher term will terminate the current leadership) and
-						// (3) election timeout when server initiate heart beat does not pass
+						// (3) election timeout when set before server initiates heartbeats does not expire
 						rf.mu.Unlock()
 						log.Printf("this server %d as leader (term %d) did not received heartbeat reply from server %d, initiate retry", rf.me, leaderTerm, serverIndex)
 						receivedReply = rf.sendAppendEntries(serverIndex, &args, &reply)
@@ -536,7 +502,6 @@ func (rf *Raft) actAsLeader() {
 						} else {
 							log.Printf("this server %d as leader (term %d) received heart beat reply from server %d and remain a leader", rf.me, leaderTerm, serverIndex)
 						}		
-						// tell the condition variable to stop waiting and acquire lock 
 					} else {
 						log.Printf("this server %d as leader (term %d) does not received heart beat reply from server %d ", rf.me, leaderTerm, serverIndex)
 					}
@@ -627,7 +592,6 @@ func (rf *Raft) actAsCandidate() {
 
 	numberOfPeers := len(rf.peers)
 
-
 	rf.mu.Unlock()
 
 	cond := sync.NewCond(&rf.mu)
@@ -653,7 +617,7 @@ func (rf *Raft) actAsCandidate() {
 					// retry if 
 					// (1) the reply of requestVote was unsuccessful and
 					// (2) server is still a candidate (receiving AppendEntried RPC from server of higher term will terminate the current candidateship) and
-					// (3) election timeout when server initiate heart beat does not pass
+					// (3) election timeout when server initiate requestVote does not expire
 					rf.mu.Unlock()
 					log.Printf("this server %d as candidate (term %d) did not received requestVote reply from server %d, initiate retry", rf.me, termThisServer, serverIndex)
 					receivedReply = rf.sendRequestVote(serverIndex, &args, &reply)
@@ -679,7 +643,6 @@ func (rf *Raft) actAsCandidate() {
 							log.Printf("this server %d as candidate (term %d) did not received vote from server %d", rf.me, termThisServer, serverIndex)
 						}
 					}		
-					// tell the condition variable to stop waiting and acquire lock 
 
 				}
 				finished++
@@ -697,7 +660,6 @@ func (rf *Raft) actAsCandidate() {
 		if currentTime.After(timeToCheck) {
 			log.Printf("this server %d as candidate did not get reply from all servers during election timeout, restart election", rf.me)
 			rf.role = candidate_role
-			//rf.resetElectionTimeOut()
 			return
 		}
 
@@ -766,9 +728,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = sentinel_index
 	rf.lastApplied = sentinel_index
 	
-	//ijnitialize timeLastHeartBeat and electionTimeOutMilliSecond on followers, all servers start as followers
-	//rf.initTimeLastHeartBeat := time.Now()
-	//rf.initElectionTimeOutMilliSecond := generateElectionTimeoutMilliSecond()
+	// initialize timeLastHeartBeat and electionTimeOutMilliSecond on followers, all servers start as followers
 	rf.resetElectionTimeOut()
 
 	rf.quorum = int(math.Ceil(float64(len(rf.peers)) / 2))
