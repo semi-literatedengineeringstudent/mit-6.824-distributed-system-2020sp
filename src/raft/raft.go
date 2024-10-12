@@ -187,14 +187,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.currentTerm = args.Term
 			rf.votedFor = -1
  
-			// if a candidate received entry from some leader of higher or equal term, 
+			// if a candidate receives entry from some leader of higher or equal term, 
 			// we know election should terminate and candidate goes to follower mode
 
-			// if a leader entry from some leader of higher term, 
+			// if a leader receives entry from some leader of higher term (leader election safety properties guarantees there will be no other leader of same term), 
 			// we know the leader should become a follower
-			//defer rf.cond.Broadcast()
 		} else {
 			if (args.Term > rf.currentTerm) {
+				// if a follower receives entry from some leader of higher term, it remains follower
+				// but update its term and set votedFor top null to get ready for election of higher term
 				rf.currentTerm = args.Term
 				rf.votedFor = -1
 			}
@@ -284,14 +285,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} 
 
 	if args.Term > rf.currentTerm {
-		/*if (rf.role == candidate_role || rf.role == leader_role) {
-			rf.role = follower_role
-			if (rf.role == candidate_role) {
-				log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
-			} else {
-				log.Printf("this server %d was a leader in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
-			}
-		}*/
+		// if a server receives requestVote rpc from any candidate of higher term, change role to follower, update term, and set voteFor to null
 		if (rf.role == candidate_role) {
 			log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		} else if rf.role == leader_role{
@@ -304,32 +298,30 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = -1
 
 	}
-	//if voteForIsNull(args.Term, rf.currentTerm, rf.votedFor) || rf.votedFor == args.CandidateId
 	if rf.votedFor == not_voted || rf.votedFor == args.CandidateId {
+		// now for the term candidate has, if this server has voted for someone, then it does not vote for anyone else
+		// if I have not voted for anyone, examine the log of candidate
+		// if I have voted for the same candidate and term is not higher than the term I voted it for
+		// then it is possible the candidate fired retry and I need to make sure the log is still as up to date
+		// if not as up to date, I will revoke my vote, which still conforms with "at most one vote per term" property
 		var lastEntryTerm int = default_start_term
 		if rf.logEndIndex != sentinel_index {
 			lastEntryTerm = rf.logs[rf.logEndIndex].Term
 		}
 		if candidateIsMoreUpdated(args.LastLogTerm, args.LastLogIndex, lastEntryTerm, rf.logEndIndex) {
-			//rf.currentTerm = int(math.Max(float64(args.Term), float64(rf.currentTerm)))
-
+			
+			// if the candidate has higher or same term and is more updated
+			// vote for it
 			reply.Term = args.Term
 			reply.VoteGranted = true
 
 			rf.votedFor = args.CandidateId
-
-			//rf.timeLastHeartBeat = time.Now()
-			//rf.electionTimeOutMilliSecond = generateElectionTimeoutMilliSecond()
-			//rf.resetElectionTimeOut()
 			return
 		}
 	} 
-		
-	//rf.votedFor = not_voted
-	//reply.Term = rf.currentTerm
+	
 	reply.Term = args.Term
 	reply.VoteGranted = false
-	
 
 	return
 }
@@ -416,25 +408,19 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) resetElectionTimeOut() {
-	//rf.mu.Lock()
-	//defer rf.mu.Unlock()
-
 	rf.timeLastHeartBeat = time.Now()
 	rf.electionTimeOutMilliSecond = generateElectionTimeoutMilliSecond()
 	return
 }
 
 func (rf *Raft) resetHeartBeatTimeOut() {
-	//rf.mu.Lock()
-	//defer rf.mu.Unlock()
-
 	rf.timeLastHeartBeat = time.Now()
 	rf.electionTimeOutMilliSecond = heartBeat_timeout_millisecond
 	return
 }
 
 func generateElectionTimeoutMilliSecond() int{
-	rand.Seed(time.Now().UnixNano())
+	//rand.Seed(time.Now().UnixNano())
 	return election_time_out_lower_bound_millisecond + rand.Intn(election_time_out_range_millisecond)
 }
 
@@ -463,29 +449,26 @@ func (rf *Raft) actAsLeader() {
 	}
 	log.Printf("this server %d is now a leader of term %d", rf.me, rf.currentTerm)
 	
-	
 	rf.mu.Unlock()
 	cond := sync.NewCond(&rf.mu)
 
 	for {
-
 		rf.mu.Lock()
 		if rf.role != leader_role {
 			defer rf.mu.Unlock()
 			return;
 		}
 		
-
 		if rf.killed() {
 			if rf.killedMessagePrinted == 0 {
 				rf.killedMessagePrinted = 1
 				log.Printf("the server %d as leader has been killed...", rf.me)
 			}
 			defer rf.mu.Unlock()
-			
 			return
 		}
-		rf.resetHeartBeatTimeOut()
+		//rf.resetHeartBeatTimeOut()
+		//rf.resetElectionTimeOut()
 
 		leaderTerm := rf.currentTerm
 		leaderId := rf.me
@@ -497,7 +480,6 @@ func (rf *Raft) actAsLeader() {
 		leaderElectionTimeOutMilliSecond := rf.electionTimeOutMilliSecond
 		rf.mu.Unlock()
 
-		
 		finished := 1
 		numHeartBeatReplyReceived := 1 // init as 1 since leader knows its own heart beat
 		for i := 0; i < numberOfPeers; i++ {
@@ -616,7 +598,6 @@ func (rf *Raft) actAsFollower() {
 			defer rf.mu.Unlock()	
 			log.Printf("the server %d as follower in term %d has not heard heart beat from leader after election timeout expire, switch to candidate role", rf.me, rf.currentTerm)
 			rf.role = candidate_role
-			//rf.resetElectionTimeOut()
 			return
 		}
 		rf.syncCommitIndexAndLastApplied()
@@ -750,8 +731,6 @@ func (rf *Raft) actAsCandidate() {
 
 }
 
-
-
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -806,15 +785,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				} else {
 					rf.actAsLeader()
 				}
-
 			}
-
 		}
 	}(rf)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
-
 	return rf
 }
