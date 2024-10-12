@@ -185,6 +185,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				log.Printf("this server %d was a leader in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 			}
 			rf.currentTerm = args.Term
+			rf.votedFor = -1
  
 			// if a candidate received entry from some leader of higher or equal term, 
 			// we know election should terminate and candidate goes to follower mode
@@ -192,7 +193,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// if a leader entry from some leader of higher term, 
 			// we know the leader should become a follower
 			//defer rf.cond.Broadcast()
+		} else {
+			if (args.Term > rf.currentTerm) {
+				rf.currentTerm = args.Term
+				rf.votedFor = -1
+			}
 		}
+		
 		if args.IsHeartBeat {
 			reply.Term = args.Term
 			reply.Success = true
@@ -272,38 +279,57 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// follower send most up to date global term so that 
 		// candidate update itself upon follower receiving requestVoteRPC from an outdated condidate
 		reply.VoteGranted = false
+		log.Printf("this server %d (term %d) received requestVote from server %d of lower term %d, vote not granted", rf.me, rf.currentTerm, args.Term, args.CandidateId)
 		return
 	} 
 
-	if args.Term > rf.currentTerm && (rf.role == candidate_role || rf.role == leader_role) {
-		rf.role = follower_role
+	if args.Term > rf.currentTerm {
+		/*if (rf.role == candidate_role || rf.role == leader_role) {
+			rf.role = follower_role
+			if (rf.role == candidate_role) {
+				log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+			} else {
+				log.Printf("this server %d was a leader in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+			}
+		}*/
 		if (rf.role == candidate_role) {
 			log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
-		} else {
+		} else if rf.role == leader_role{
 			log.Printf("this server %d was a leader in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+		} else {
+			log.Printf("this server %d was a follower in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		}
+		rf.role = follower_role
 		rf.currentTerm = args.Term
+		rf.votedFor = -1
+
 	}
-	
-	if voteForIsNull(args.Term, rf.currentTerm, rf.votedFor) || rf.votedFor == args.CandidateId {
+	//if voteForIsNull(args.Term, rf.currentTerm, rf.votedFor) || rf.votedFor == args.CandidateId
+	if rf.votedFor == not_voted || rf.votedFor == args.CandidateId {
 		var lastEntryTerm int = default_start_term
 		if rf.logEndIndex != sentinel_index {
 			lastEntryTerm = rf.logs[rf.logEndIndex].Term
 		}
 		if candidateIsMoreUpdated(args.LastLogTerm, args.LastLogIndex, lastEntryTerm, rf.logEndIndex) {
-			rf.currentTerm = int(math.Max(float64(args.Term), float64(rf.currentTerm)))
+			//rf.currentTerm = int(math.Max(float64(args.Term), float64(rf.currentTerm)))
 
 			reply.Term = args.Term
 			reply.VoteGranted = true
 
-			rf.timeLastHeartBeat = time.Now()
-			rf.electionTimeOutMilliSecond = generateElectionTimeoutMilliSecond()
+			rf.votedFor = args.CandidateId
+
+			//rf.timeLastHeartBeat = time.Now()
+			//rf.electionTimeOutMilliSecond = generateElectionTimeoutMilliSecond()
+			//rf.resetElectionTimeOut()
+			return
 		}
-	} else {
-		rf.votedFor = not_voted
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-	}
+	} 
+		
+	//rf.votedFor = not_voted
+	//reply.Term = rf.currentTerm
+	reply.Term = args.Term
+	reply.VoteGranted = false
+	
 
 	return
 }
@@ -398,6 +424,15 @@ func (rf *Raft) resetElectionTimeOut() {
 	return
 }
 
+func (rf *Raft) resetHeartBeatTimeOut() {
+	//rf.mu.Lock()
+	//defer rf.mu.Unlock()
+
+	rf.timeLastHeartBeat = time.Now()
+	rf.electionTimeOutMilliSecond = heartBeat_timeout_millisecond
+	return
+}
+
 func generateElectionTimeoutMilliSecond() int{
 	rand.Seed(time.Now().UnixNano())
 	return election_time_out_lower_bound_millisecond + rand.Intn(election_time_out_range_millisecond)
@@ -427,12 +462,19 @@ func (rf *Raft) actAsLeader() {
 		return
 	}
 	log.Printf("this server %d is now a leader of term %d", rf.me, rf.currentTerm)
-	rf.resetElectionTimeOut()
+	
+	
 	rf.mu.Unlock()
+	cond := sync.NewCond(&rf.mu)
 
 	for {
 
 		rf.mu.Lock()
+		if rf.role != leader_role {
+			defer rf.mu.Unlock()
+			return;
+		}
+		
 
 		if rf.killed() {
 			if rf.killedMessagePrinted == 0 {
@@ -443,6 +485,8 @@ func (rf *Raft) actAsLeader() {
 			
 			return
 		}
+		rf.resetHeartBeatTimeOut()
+
 		leaderTerm := rf.currentTerm
 		leaderId := rf.me
 	
@@ -453,8 +497,9 @@ func (rf *Raft) actAsLeader() {
 		leaderElectionTimeOutMilliSecond := rf.electionTimeOutMilliSecond
 		rf.mu.Unlock()
 
-		cond := sync.NewCond(&rf.mu)
-		finished := 0
+		
+		finished := 1
+		numHeartBeatReplyReceived := 1 // init as 1 since leader knows its own heart beat
 		for i := 0; i < numberOfPeers; i++ {
 			index := i
 			if (index != leaderId) {
@@ -472,12 +517,12 @@ func (rf *Raft) actAsLeader() {
 					args.IsHeartBeat = true
 
 					reply := AppendEntriesReply{}
-
+					log.Printf("this server %d as leader (term %d) send heart beat to %d", leaderId, leaderTerm, serverIndex)
 					receivedReply := rf.sendAppendEntries(serverIndex, &args, &reply)
 
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
-					for timeToCheck, currentTime := (leaderLastHeartBeatTime).Add(time.Duration(leaderElectionTimeOutMilliSecond) * time.Millisecond), time.Now(); !receivedReply && rf.role == leader_role && !currentTime.After(timeToCheck); {
+					/*for timeToCheck, currentTime := (leaderLastHeartBeatTime).Add(time.Duration(leaderElectionTimeOutMilliSecond) * time.Millisecond), time.Now(); !receivedReply && rf.role == leader_role && !currentTime.After(timeToCheck); {
 						// retry if 
 						// (1) the reply of heart beat was unsuccessful and
 						// (2) server is still a leader (receiving AppendEntried RPC from server of higher term will terminate the current leadership) and
@@ -486,7 +531,7 @@ func (rf *Raft) actAsLeader() {
 						log.Printf("this server %d as leader (term %d) did not received heartbeat reply from server %d, initiate retry", rf.me, leaderTerm, serverIndex)
 						receivedReply = rf.sendAppendEntries(serverIndex, &args, &reply)
 						rf.mu.Lock()
-					}
+					}*/
 
 					if rf.role != leader_role {
 						cond.Broadcast()
@@ -494,14 +539,16 @@ func (rf *Raft) actAsLeader() {
 					}
 					
 					if receivedReply {
-						log.Printf("this server %d as leader (term %d) received heartbeat reply from server %d", rf.me, leaderTerm, serverIndex)
+						log.Printf("this server %d as leader (term %d) received heartbeat reply from server %d", leaderId, leaderTerm, serverIndex)
 						if reply.Term > leaderTerm {
 							rf.currentTerm = reply.Term
 							rf.role = follower_role
+							rf.votedFor = not_voted
 							log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", rf.me, leaderTerm, reply.Term, serverIndex)
 						} else {
 							log.Printf("this server %d as leader (term %d) received heart beat reply from server %d and remain a leader", rf.me, leaderTerm, serverIndex)
-						}		
+						}	
+						numHeartBeatReplyReceived++	
 					} else {
 						log.Printf("this server %d as leader (term %d) does not received heart beat reply from server %d ", rf.me, leaderTerm, serverIndex)
 					}
@@ -512,10 +559,14 @@ func (rf *Raft) actAsLeader() {
 		}
 
 		rf.mu.Lock()
-		for finished < numberOfPeers - 1 && rf.role == leader_role {
+		for numHeartBeatReplyReceived < rf.quorum && finished < numberOfPeers && rf.role == leader_role{
 			cond.Wait()
 		}
 		rf.syncCommitIndexAndLastApplied()
+		if (numHeartBeatReplyReceived < rf.quorum) {
+			rf.role = follower_role
+			log.Printf("this server %d as leader (term %d) did not receive heart reply from majority of servers, switch to follower mode", rf.me, leaderTerm)
+		}
 		if rf.role != leader_role {
 			defer rf.mu.Unlock()
 			return
@@ -539,6 +590,7 @@ func (rf *Raft) actAsFollower() {
 		return
 	}
 	log.Printf("this server %d is now a follower of term %d", rf.me, rf.currentTerm)
+	rf.votedFor = not_voted
 	rf.resetElectionTimeOut()
 	rf.mu.Unlock()
 
@@ -552,6 +604,10 @@ func (rf *Raft) actAsFollower() {
 			}
 			defer rf.mu.Unlock()
 			return
+		}
+		if rf.role != follower_role {
+			defer rf.mu.Unlock()
+			return;
 		}
 
 		timeToCheck := (rf.timeLastHeartBeat).Add(time.Duration(rf.electionTimeOutMilliSecond) * time.Millisecond)	
@@ -608,12 +664,12 @@ func (rf *Raft) actAsCandidate() {
 				args.LastLogTerm = lastLogTermThisServer
 				
 				reply := RequestVoteReply{}
-	
+				log.Printf("this server %d as candidate (term %d) send requestVote to %d", candidateIdThisServer, termThisServer, serverIndex)
 				receivedReply := rf.sendRequestVote(serverIndex, &args, &reply)
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
-				for timeToCheck, currentTime := (candidateLastHeartBeatTime).Add(time.Duration(candidateElectionTimeOutMilliSecond) * time.Millisecond), time.Now(); !receivedReply && rf.role == candidate_role && !currentTime.After(timeToCheck); {
+				/*for timeToCheck, currentTime := (candidateLastHeartBeatTime).Add(time.Duration(candidateElectionTimeOutMilliSecond) * time.Millisecond), time.Now(); !receivedReply && rf.role == candidate_role && !currentTime.After(timeToCheck); {
 					// retry if 
 					// (1) the reply of requestVote was unsuccessful and
 					// (2) server is still a candidate (receiving AppendEntried RPC from server of higher term will terminate the current candidateship) and
@@ -622,7 +678,7 @@ func (rf *Raft) actAsCandidate() {
 					log.Printf("this server %d as candidate (term %d) did not received requestVote reply from server %d, initiate retry", rf.me, termThisServer, serverIndex)
 					receivedReply = rf.sendRequestVote(serverIndex, &args, &reply)
 					rf.mu.Lock()
-				}
+				}*/
 
 				if rf.role != candidate_role {
 					cond.Broadcast()
@@ -630,7 +686,7 @@ func (rf *Raft) actAsCandidate() {
 				}
 
 				if receivedReply {
-					log.Printf("this server %d as candidate (term %d) received heartbeat reply from server %d", rf.me, termThisServer, serverIndex)
+					log.Printf("this server %d as candidate (term %d) received requestVote reply from server %d", rf.me, termThisServer, serverIndex)
 					if reply.Term > termThisServer {
 						rf.currentTerm = reply.Term
 						rf.role = follower_role
@@ -643,7 +699,8 @@ func (rf *Raft) actAsCandidate() {
 							log.Printf("this server %d as candidate (term %d) did not received vote from server %d", rf.me, termThisServer, serverIndex)
 						}
 					}		
-
+				} else {
+					log.Printf("this server %d as candidate (term %d) did not receive requestVote reply from server %d", rf.me, termThisServer, serverIndex)
 				}
 				finished++
 				cond.Broadcast()
@@ -735,13 +792,23 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.killedMessagePrinted = 0;
 	go func(rf *Raft){
 		for {
-			if rf.role == follower_role {
-				rf.actAsFollower()
-			} else if  rf.role == candidate_role {
-				rf.actAsCandidate()
+			rf.mu.Lock()
+			rfRole := rf.role
+			rfKilled := rf.killed()
+			rf.mu.Unlock()
+			if (rfKilled) {
+				time.Sleep(time.Duration(killed_server_busywait_avoid_time_millisecond) * time.Millisecond)
 			} else {
-				rf.actAsLeader()
+				if rfRole == follower_role {
+					rf.actAsFollower()
+				} else if rfRole == candidate_role {
+					rf.actAsCandidate()
+				} else {
+					rf.actAsLeader()
+				}
+
 			}
+
 		}
 	}(rf)
 
