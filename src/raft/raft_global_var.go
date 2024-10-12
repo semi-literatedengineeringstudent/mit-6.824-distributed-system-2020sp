@@ -11,7 +11,7 @@ var sentinel_index int = 0
 var default_start_term int = 0
 
 var election_time_out_lower_bound_millisecond int = 500
-var election_time_out_range_millisecond int = 300
+var election_time_out_range_millisecond int = 400
 
 var follower_loop_wait_time_millisecond int = 50
 var leader_heartbeat_millisecond int = 100
