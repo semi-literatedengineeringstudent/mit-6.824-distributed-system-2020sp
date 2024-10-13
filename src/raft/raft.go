@@ -167,8 +167,6 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	
 	
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -179,7 +177,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// if receive appendEntry rpc from a server who believe oneself is a leader and has greater and equal ter,
 		// then current server knows it is a heart beat from current leader as no previous leader would 
 		// higher term then the sender or rpc, then we reset election timeout
-		if rf.role == candidate_role || rf.role == leader_role {
+		
+		/*if rf.role == candidate_role || rf.role == leader_role {
 			//rf.role == candidate_role || (rf.role == leader_role && agrs.Term > rf.currentTerm)
 			rf.role = follower_role
 
@@ -203,7 +202,45 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.currentTerm = args.Term
 				rf.votedFor = -1
 			}
+		}*/
+
+		// the above block is designed to conform with 
+		// 1. If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
+		// 2. If AppendEntries RPC received from new leader: convert to follower
+
+		// the below is an updated version that works identically as the one above and satisifies raft
+		// rules in a more readable manner
+
+		// rule 1
+		if args.Term > rf.currentTerm {
+			// if a server receives requestVote rpc from any candidate of higher term, change role to follower, update term, and set voteFor to null
+			if (rf.role == candidate_role) {
+				log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+			} else if rf.role == leader_role{
+				log.Printf("this server %d was a leader in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+			} else {
+				log.Printf("this server %d was a follower in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+			}
+			rf.role = follower_role
+			rf.currentTerm = args.Term
+			rf.votedFor = -1
 		}
+
+		// rule 2, which is trigger for candidate_role if terms are equal, which also indecates there is a new leader
+		if rf.role == candidate_role {
+			log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+			rf.role = follower_role
+			rf.currentTerm = args.Term
+			rf.votedFor = -1
+		}
+
+		// briefly sumarize it
+		// follower updates its term if receiving rpc from leader of higher term
+		// leader updates its term if receiving rpc from leader of higher term (which is guaranteed due to safe election property)
+		// and switch to follower
+		// candidate updates upon either receiving rpc from leader of higher term or same term (someone else becomes leader before you)
+	
+
 		
 		if args.IsHeartBeat {
 			reply.Term = args.Term
@@ -287,7 +324,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		log.Printf("this server %d (term %d) received requestVote from server %d of lower term %d, vote not granted", rf.me, rf.currentTerm, args.Term, args.CandidateId)
 		return
 	} 
-
+	// conform with all server rulr
+	// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 	if args.Term > rf.currentTerm {
 		// if a server receives requestVote rpc from any candidate of higher term, change role to follower, update term, and set voteFor to null
 		if (rf.role == candidate_role) {
@@ -321,7 +359,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 			rf.votedFor = args.CandidateId
 			rf.resetElectionTimeOut() 
-			//only reset election timeout when grant vote to a server
+			// only reset election timeout when grant vote to a server
+			// this way if current server has more up to date log, it will less frequently 
+			// reset its election timeout, and will be more likely to start new election
+			// and become legit leader in future term
 			return
 		}
 	} 
