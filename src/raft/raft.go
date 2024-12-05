@@ -76,8 +76,12 @@ type Raft struct {
 	lastApplied int // the index of last log the server has applied to its state machine
 	
 	// volatile states on leaders
-	nextIndex []int // on each server, index of the next log entry the leader's new entry, if successfully appended, will be appended to, init as leader logEndIndex + 1 for each server
-	matchIndex []int// on each server, index of highest log entry known to match that of leader's 
+	nextIndex []int 
+	// on each server, index of the next log entry the leader's new entry, if successfully appended, will be appended to, init as leader logEndIndex + 1 for each server
+	// decrement upon every failed AppendEntries RPC 
+	matchIndex []int
+	// on each server, index of highest log entry known to match that of leader's 
+	// update upon every successful AppendEntries RPC 
 	
 	//volatile states on follower
 	timeLastHeartBeat time.Time
@@ -90,6 +94,7 @@ type Raft struct {
 
 type LogEntry struct {
 	Term int
+	command interface{}
 }
 
 // return currentTerm and whether this server
@@ -153,10 +158,14 @@ type AppendEntriesArgs struct {
 	LeaderId int // so follower can redirect clients (used in labs after 2)
 	PrevLogIndex int // index of log entry immediately preceding new ones
 	PrevLogTerm int // term of prevLogIndex entry
+	//Entries map[int]*LogEntry // map of entries to append to follower logs starting from matchedIndex + 1 to end of leader log
 	Entry *LogEntry // log entries to store, for now I just send one for simplicity, scale later
 	LeaderCommit int // leader’s commitIndex
 
-	IsHeartBeat bool // so follower can quickly return for heart beat
+	IsHeartBeat bool // so that follower can quickly return for heart beat
+
+	EntriedAppended bool // given not heartbeat, so that follower can quickly decide if it will append entries or not to its local log
+
 }
 
 type AppendEntriesReply struct {
@@ -174,39 +183,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	} else {
 		rf.resetElectionTimeOut() 
-		// if receive appendEntry rpc from a server who believe oneself is a leader and has greater and equal ter,
-		// then current server knows it is a heart beat from current leader as no previous leader would 
-		// higher term then the sender or rpc, then we reset election timeout
-		
-		/*if rf.role == candidate_role || rf.role == leader_role {
-			//rf.role == candidate_role || (rf.role == leader_role && agrs.Term > rf.currentTerm)
-			rf.role = follower_role
 
-			if (rf.role == candidate_role) {
-				log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
-			} else {
-				log.Printf("this server %d was a leader in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
-			}
-			rf.currentTerm = args.Term
-			rf.votedFor = -1
- 
-			// if a candidate receives entry from some leader of higher or equal term, 
-			// we know election should terminate and candidate goes to follower mode
-
-			// if a leader receives entry from some leader of higher term (leader election safety properties guarantees there will be no other leader of same term), 
-			// we know the leader should become a follower
-		} else {
-			if (args.Term > rf.currentTerm) {
-				// if a follower receives entry from some leader of higher term, it remains follower
-				// but update its term and set votedFor top null to get ready for election of higher term
-				rf.currentTerm = args.Term
-				rf.votedFor = -1
-			}
-		}*/
-
-		// the above block is designed to conform with 
+		// the below block is designed to conform with 
 		// 1. If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
-		// 2. If AppendEntries RPC received from new leader: convert to follower
+		// 2. If AppendEntries RPC received from new leader as a candidate: convert to follower
 
 		// the below is an updated version that works identically as the one above and satisifies raft
 		// rules in a more readable manner
@@ -226,7 +206,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.votedFor = -1
 		}
 
-		// rule 2, which is trigger for candidate_role if terms are equal, which also indecates there is a new leader
+		// rule 2, which is triggered for candidate_role if terms are equal, which also indecates there is a new leader
 		if rf.role == candidate_role {
 			log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 			rf.role = follower_role
@@ -297,17 +277,6 @@ func candidateIsMoreUpdated(candidateLastLogTerm int, candidateLastLogIndex int,
 	return (candidateLastLogTerm > followerLastLogTerm || (candidateLastLogTerm == followerLastLogTerm && (candidateLastLogIndex >= followerLastLogIndex)))
 }
 
-func voteForIsNull(argsTerm int, thisServerTerm int, thisServerVotedFor int) bool{
-	if (argsTerm > thisServerTerm) {
-		return true
-	}
-	if (thisServerVotedFor == not_voted) {
-		return true
-	}
-	return false
-}
-
-
 //
 // example RequestVote RPC handler.
 //
@@ -324,7 +293,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		log.Printf("this server %d (term %d) received requestVote from server %d of lower term %d, vote not granted", rf.me, rf.currentTerm, args.Term, args.CandidateId)
 		return
 	} 
-	// conform with all server rulr
+	// conform with all server rule
 	// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 	if args.Term > rf.currentTerm {
 		// if a server receives requestVote rpc from any candidate of higher term, change role to follower, update term, and set voteFor to null
@@ -338,8 +307,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.role = follower_role
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
-
 	}
+
 	if rf.votedFor == not_voted || rf.votedFor == args.CandidateId {
 		// now for the term candidate has, if this server has voted for someone, then it does not vote for anyone else
 		// if I have not voted for anyone, examine the log of candidate
@@ -427,6 +396,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	isLeader := true
 
+	rf.mu.Lock()
+
+	defer rf.mu.Unlock()
+
+	if rf.role == leader_role {
+
+	}
+
+
 	// Your code here (2B).
 
 
@@ -482,6 +460,23 @@ func (rf *Raft) syncCommitIndexAndLastApplied() {
 	}
 }
 
+func (rf *Raft) initLeader() {
+	numberOfPeers := len(rf.peers)
+
+	rf.matchIndex = make([]int, numberOfPeers)
+	rf.nextIndex = make([]int, numberOfPeers)
+
+	for i := 0; i < numberOfPeers; i++ {
+		if i == rf.me {
+			rf.matchIndex[i] = rf.logEndIndex
+			rf.nextIndex[i] = rf.logEndIndex + 1
+		} else {
+			rf.matchIndex[i] = -1 // init to -1 and update upon 
+			rf.nextIndex[i] = rf.logEndIndex + 1
+		}
+	}
+}
+
 func (rf *Raft) actAsLeader() {
 	rf.mu.Lock()
 	if rf.killed(){
@@ -495,7 +490,7 @@ func (rf *Raft) actAsLeader() {
 		return
 	}
 	log.Printf("this server %d is now a leader of term %d", rf.me, rf.currentTerm)
-	
+
 	rf.mu.Unlock()
 	cond := sync.NewCond(&rf.mu)
 
@@ -603,7 +598,6 @@ func (rf *Raft) actAsLeader() {
 		
 		rf.mu.Unlock()
 		time.Sleep(time.Duration(leader_heartbeat_millisecond) * time.Millisecond)
-
 	}
 }
 
@@ -767,6 +761,8 @@ func (rf *Raft) actAsCandidate() {
 	if voteCount >= rf.quorum {
 		rf.resetElectionTimeOut()
 		rf.role = leader_role
+		rf.initLeader()
+
 		log.Printf("this server %d as candidate has been turned to a leader upon receiving vote from a group of quorum", rf.me)
 		return
 	} else {

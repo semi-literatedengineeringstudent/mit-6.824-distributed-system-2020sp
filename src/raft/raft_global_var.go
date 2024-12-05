@@ -6,7 +6,7 @@ var follower_role int = 2
 
 var not_voted int = -1
 
-var sentinel_index int = 0
+var sentinel_index int = -1
 
 var default_start_term int = 0
 
