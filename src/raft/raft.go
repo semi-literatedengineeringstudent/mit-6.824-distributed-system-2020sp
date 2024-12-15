@@ -169,7 +169,6 @@ type AppendEntriesArgs struct {
 	LeaderId int // so follower can redirect clients (used in labs after 2)
 	PrevLogIndex int // index of log entry immediately preceding new ones
 	PrevLogTerm int // term of prevLogIndex entry
-	//Entry *LogEntry // log entries to store, for now I just send one for simplicity, scale later
 
 	Entries map[int]*LogEntry // map of entries to append to follower logs starting from matchedIndex + 1 to end of leader log
 	EntriesStart int // start of entries appended from leader to follower
@@ -630,7 +629,6 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 		replySuccess := reply.Success
 		if (replyTerm > term) {
 			log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", leaderId, term, replyTerm, serverIndex)
-			
 			return replyTerm, false, false
 		} else {
 			if !replySuccess {
@@ -681,138 +679,6 @@ func (rf *Raft) updateCommitIndex() {
 	return
 }
 
-/*func (rf *Raft) logReplication() {
-	rf.mu.Lock()
-
-	index := rf.logEndIndex 
-	term := rf.currentTerm
-
-	leaderId := rf.me
-	numberOfPeers := len(rf.peers)
-
-	leaderCommit := rf.commitIndex
-
-	rf.mu.Unlock()
-
-	successfullyAppend := 1
-	finished := 1
-
-	cond := sync.NewCond(&rf.mu)
-	for i := 0; i < numberOfPeers; i++ {
-		serverIndex := i
-
-		if serverIndex != leaderId {
-			rf.mu.Lock()
-			serverNextIndex := rf.nextIndex[serverIndex]
-			serverMatchIndex := rf.matchIndex[serverIndex]
-			prevLogIndex := sentinel_index
-			prevLogTerm := default_start_term
-			if serverNextIndex - 1 != sentinel_index {
-				prevLogIndex = serverNextIndex - 1
-				prevLogTerm = (rf.logs[serverNextIndex - 1]).Term
-			}
-
-			rf.mu.Unlock()
-			if index >= serverNextIndex {
-				// Leaders 3
-				// If last log index ≥ nextIndex for a follower: send
-				// AppendEntries RPC with log entries starting at nextIndex
-				go func(serverIndex int, term int, leaderId int, prevLogIndex int, prevLogTerm int, leaderCommit int, index int, rf *Raft) {
-					serverTerm, currentMatchedIndex, isLeader := rf.obtainMatchIndex(serverIndex, term, leaderId, prevLogIndex, prevLogTerm, index, leaderCommit)
-					if !isLeader {
-						rf.mu.Lock()
-						rf.currentTerm = int(math.Max(float64(serverTerm), float64(rf.currentTerm)))
-						rf.role = follower_role
-						rf.mu.Unlock()
-						finished++
-					} else {
-						serverTerm, appendSuccessful, isLeader := rf.appendNewEntriesFromMatchedIndex(serverIndex, term, leaderId, currentMatchedIndex + 1, index, leaderCommit)
-						if !isLeader {
-							rf.mu.Lock()
-							rf.currentTerm = int(math.Max(float64(serverTerm), float64(rf.currentTerm)))
-							rf.role = follower_role
-							rf.mu.Unlock()
-							finished++
-						} else {
-							if !appendSuccessful {
-								finished++
-							} else {
-								finished++
-								successfullyAppend++
-							}
-						}
-					}
-					log.Printf("this server %d as leader (term %d) attempts to append logs to followers %d from entriesStart %d to entriesEnd %d, now have finished %d and success %d", leaderId, term, serverIndex, currentMatchedIndex + 1, index, finished, successfullyAppend)
-					cond.Broadcast()
-					return
-				}(serverIndex, term, leaderId, prevLogIndex, prevLogTerm, leaderCommit, index, rf)
-			} else {
-				// send emptyRPC call with most recent leader commit index
-
-				go func(serverIndex int, term int, leaderId int, leaderCommit int, serverMatchIndex int, rf *Raft) {
-					args := AppendEntriesArgs{}
-					args.Term = term
-					args.LeaderId = leaderId
-
-					args.LeaderCommit = leaderCommit
-
-					args.EmptyRPC = true
-
-					args.EntriesAppended = false
-
-					reply := AppendEntriesReply{}
-
-					receivedReply := false
-					for !receivedReply {
-						receivedReply = rf.sendAppendEntries(serverIndex, &args, &reply)
-						if receivedReply {
-							log.Printf("this server %d as leader (term %d), successfully received reply when attempting sending empty RPC to follower %d, now examine reply", leaderId, term, serverIndex)
-						} else {
-							log.Printf("this server %d as leader (term %d), did not receive reply when attempting sending empty RPC to follower %d, initiate retry", leaderId, term, serverIndex)
-						}
-					}
-					rf.mu.Lock()
-					defer rf.mu.Unlock()
-					if reply.Term > rf.currentTerm {
-						rf.currentTerm = int(math.Max(float64(reply.Term), float64(rf.currentTerm)))
-						rf.role = follower_role
-						rf.votedFor = not_voted
-					}
-					finished++
-					if serverMatchIndex >= index {
-						successfullyAppend++
-					}
-					cond.Broadcast()
-
-					return
-				}(serverIndex, term, leaderId, leaderCommit, serverMatchIndex, rf)
-			}
-		} 
-	}
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	entryCommitted := false
-	for finished < numberOfPeers {
-		if rf.killed() {
-			if rf.killedMessagePrinted == 0 {
-				rf.killedMessagePrinted = 1
-				log.Printf("the server %d as leader has been killed...", rf.me)
-			}
-			return
-		}
-		if rf.role != leader_role {
-			log.Printf("this server %d as leader (term %d) is no longer a leader", leaderId, term)
-			return
-		}
-		rf.updateCommitIndex()
-		cond.Wait()
-	}
-	rf.syncCommitIndexAndLastApplied()
-
-}*/
-
-
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -847,7 +713,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// If command received from client: append entry to local log,
 		// respond after entry applied to state machine (§5.3)
 		rf.logs[index] = &entryToAppend
-		//go rf.logReplication()
+		//we do not send RPC to followers immediately because we want to save band width
+		// and we shoot in every heart beat cycle to send entries to followers in batch
 		return index, term, true
 	} else {
 		return index, term, false
@@ -897,9 +764,6 @@ func generateElectionTimeoutMilliSecond() int{
 func (rf *Raft) syncCommitIndexAndLastApplied() {
 	
 	for rf.lastApplied < rf.commitIndex {
-		// apply actions until match commit index
-
-		// will be implemented to modify state machine later on
 		rf.lastApplied += 1
 		applyMsg := ApplyMsg{}
 		applyMsg.CommandValid = true
@@ -922,7 +786,7 @@ func (rf *Raft) initLeader() {
 			rf.matchIndex[i] = rf.logEndIndex
 			rf.nextIndex[i] = rf.logEndIndex + 1
 		} else {
-			rf.matchIndex[i] = -1 // init to -1 and update upon handling incoming command
+			rf.matchIndex[i] = sentinel_index // init to -1 and update upon handling incoming command
 			rf.nextIndex[i] = rf.logEndIndex + 1
 		}
 	}
