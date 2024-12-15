@@ -18,5 +18,3 @@ var election_time_out_range_millisecond int = 400
 var follower_loop_wait_time_millisecond int = 50
 var leader_heartbeat_millisecond int = 100
 var killed_server_busywait_avoid_time_millisecond int = 1000
-
-var heartBeat_timeout_millisecond int = 1100

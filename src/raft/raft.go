@@ -713,7 +713,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// If command received from client: append entry to local log,
 		// respond after entry applied to state machine (§5.3)
 		rf.logs[index] = &entryToAppend
-		//we do not send RPC to followers immediately because we want to save band width
+		// we do not send RPC to followers immediately because we want to save band width
 		// and we shoot in every heart beat cycle to send entries to followers in batch
 		return index, term, true
 	} else {
@@ -750,12 +750,6 @@ func (rf *Raft) resetElectionTimeOut() {
 	return
 }
 
-func (rf *Raft) resetHeartBeatTimeOut() {
-	rf.timeLastHeartBeat = time.Now()
-	rf.electionTimeOutMilliSecond = heartBeat_timeout_millisecond
-	return
-}
-
 func generateElectionTimeoutMilliSecond() int{
 	//rand.Seed(time.Now().UnixNano())
 	return election_time_out_lower_bound_millisecond + rand.Intn(election_time_out_range_millisecond)
@@ -786,7 +780,7 @@ func (rf *Raft) initLeader() {
 			rf.matchIndex[i] = rf.logEndIndex
 			rf.nextIndex[i] = rf.logEndIndex + 1
 		} else {
-			rf.matchIndex[i] = sentinel_index // init to -1 and update upon handling incoming command
+			rf.matchIndex[i] = sentinel_index // init to sentinel_index and update upon handling incoming command
 			rf.nextIndex[i] = rf.logEndIndex + 1
 		}
 	}
@@ -1155,21 +1149,18 @@ func (rf *Raft) actAsCandidate() {
 	}
 	rf.syncCommitIndexAndLastApplied()
 	if rf.role == follower_role {
-		//rf.resetElectionTimeOut()
 		log.Printf("this server %d as candidate has been turned to a follower upon receiving AppendEntries RPC from a leader of greater or equal term", rf.me)
 		return
 	}
 	// Candidates (§5.2) 2:
 	// If votes received from majority of servers: become leader
 	if voteCount >= rf.quorum {
-		//rf.resetElectionTimeOut()
 		rf.role = leader_role
 		rf.initLeader()
 
 		log.Printf("this server %d as candidate has been turned to a leader upon receiving vote from a group of quorum", rf.me)
 		return
 	} else {
-		//rf.resetElectionTimeOut()
 		rf.role = follower_role
 		log.Printf("this server %d as candidate has been turned to a follower upon not receiving vote from a group of quorum", rf.me)
 		return
