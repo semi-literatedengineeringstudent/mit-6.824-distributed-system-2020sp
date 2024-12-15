@@ -486,18 +486,13 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLogIndex int, prevLogTerm int, index int, leaderCommit int, leaderLastHeartBeatTime time.Time, leaderElectionTimeOutMilliSecond int) (int, int, bool) {
-
-
 	log.Printf("this server %d as leader (term %d) now initiate replicating log at %d with server %d with prevLogIndex %d and prevLogTerm %d", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
-
 	for {
 		args := AppendEntriesArgs{}
 		args.Term = term
 		args.LeaderId = leaderId
 		args.PrevLogIndex = prevLogIndex
 		args.PrevLogTerm = prevLogTerm
-
-		// not append entries yet
 
 		args.LeaderCommit = leaderCommit
 
@@ -506,7 +501,6 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 		args.EntriesAppended = false
 
 		reply := AppendEntriesReply{}
-		// need to refine the logics of retry in finding matchedIndex then replicate the physical logs
 
 		receivedReply := false
 		rf.mu.Lock()
@@ -557,6 +551,7 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 				
 					args.PrevLogIndex = prevLogIndex
 					args.PrevLogTerm = prevLogTerm
+					// Leaders 3.1
 					// If AppendEntries fails because of log inconsistency:
 					// decrement nextIndex and retry (§5.3)
 	
@@ -838,6 +833,9 @@ func (rf *Raft) actAsLeader() {
 		// prevent election timeouts (§5.2)
 		for i := 0; i < numberOfPeers; i++ {
 			serverIndex := i
+			// Leaders 3
+			// If last log index ≥ nextIndex for a follower: send
+			// AppendEntries RPC with log entries starting at nextIndex
 			if (serverIndex != leaderId) {
 				rf.mu.Lock()
 				serverNextIndex := rf.nextIndex[serverIndex]
@@ -1065,7 +1063,7 @@ func (rf *Raft) actAsCandidate() {
 
 	cond := sync.NewCond(&rf.mu)
 
-	// Candidates (§5.2) 1.3
+	// Candidates (§5.2) 1.4
 	// • Send RequestVote RPCs to all other servers
 
 	for i := 0; i < numberOfPeers; i++ {
