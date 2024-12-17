@@ -12,6 +12,8 @@ var invalid_index int = -1
 
 var default_start_term int = 0
 
+var invalid_term int = 0
+
 var election_time_out_lower_bound_millisecond int = 500
 var election_time_out_range_millisecond int = 400
 

@@ -163,7 +163,7 @@ func (rf *Raft) readPersist(data []byte) error {
 	   d.Decode(&logStartIndex) != nil ||
 	   d.Decode(&logEndIndex) != nil {
 		
-		////log.Printntf("could not read persistent state for this server. Either there has been no persistent state or there is error in reading.")
+		////log.Printf("could not read persistent state for this server. Either there has been no persistent state or there is error in reading.")
 		return errors.New("could not read persistent state for this server. Either there has been no persistent state or there is error in reading.")
 	} else {
 		rf.currentTerm = currentTerm
@@ -201,6 +201,10 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term int // currentTerm, for leader to update itself that 
 	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+
+	XTerm int // the term of the conflicting entry in follower
+	XIndex int // the first index corresponding to the conflicting term in the follower
+	XLength int // the length of the entire follower log. In case follower does not have entry in given index, the leader can simply jump the nextIndex to end of follower log and then do probing
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -228,11 +232,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if args.Term > rf.currentTerm {
 			// if a server receives requestVote rpc from any candidate of higher term, change role to follower, update term, and set voteFor to null
 			if (rf.role == candidate_role) {
-				//log.Printntf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+				//log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 			} else if rf.role == leader_role{
-				//log.Printntf("this server %d was a leader in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+				//log.Printf("this server %d was a leader in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 			} else {
-				//log.Printntf("this server %d was a follower in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+				//log.Printf("this server %d was a follower in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 			}
 			rf.role = follower_role
 			rf.currentTerm = args.Term
@@ -243,7 +247,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// rule 2, which is triggered for candidate_role if terms are equal, which also indecates there is a new leader
 		if rf.role == candidate_role {
-			//log.Printntf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+			//log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 			rf.role = follower_role
 			rf.currentTerm = args.Term
 			rf.votedFor = -1
@@ -266,6 +270,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				if args.PrevLogIndex > rf.logEndIndex {
 					reply.Term = args.Term
 					reply.Success = false
+
+					reply.XTerm = invalid_term
+					reply.XLength = rf.logEndIndex
+
 					//AppendEntries 2. Reply false if log doesnt contain an entry at prevLogIndex whose term matches prevLogTerm (�5.3)
 				} else {
 					if args.PrevLogIndex == sentinel_index && args.PrevLogTerm == default_start_term {
@@ -276,11 +284,34 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 						if entriesToCheck.Term != args.PrevLogTerm {
 							reply.Term = args.Term
 							reply.Success = false
+
+							reply.XTerm = entriesToCheck.Term
+							reply.XIndex = args.PrevLogIndex
+							//log.Printf("logStartIndex of this server %d is %d",rf.me, rf.logStartIndex)
+							//log.Printf("logEndIndex of this server %d is %d",rf.me, rf.logEndIndex)
+							//log.Printf("term at logStartIndex %d of this server %d is %d",rf.logStartIndex, rf.me, rf.logs[rf.logStartIndex].Term)
+							if rf.logs[rf.logStartIndex].Term == entriesToCheck.Term {
+								reply.XIndex = rf.logStartIndex
+							} else {
+								for j := args.PrevLogIndex - 1; j >= rf.logStartIndex; j-- {
+									entry := *(rf.logs[j])
+									if entry.Term != entriesToCheck.Term {
+										reply.XIndex = j + 1
+										break
+									}
+								}
+							}
 							
 							for i := args.PrevLogIndex; i <= rf.logEndIndex; i++ {
 								delete(rf.logs, i)
 							}
 							rf.logEndIndex = args.PrevLogIndex - 1
+							if rf.logEndIndex == sentinel_index {
+								// be careful if leader deletes all entries in the follower's log
+								// change logStartIndex accordingly
+								
+								rf.logStartIndex = sentinel_index
+							}
 							// Append Entries 3. If an existing entry conflicts with a new one 
 							// (same index but different terms), delete the existing entry and all that
 							// follow it (�5.3)
@@ -292,12 +323,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					}
 				}
 			} else {
+				if rf.logStartIndex == sentinel_index {
+					rf.logStartIndex = rf.logStartIndex + 1
+				}
 				for i := args.EntriesStart; i<= args.EntriesEnd; i++ {
 					logToAppend := LogEntry{}
 					logToAppend.Term = args.Entries[i].Term
 					logToAppend.Command = args.Entries[i].Command
 					rf.logs[i] = &logToAppend
-					//log.Printntf("this server %d as follower (term %d), attempting appending log at index %d with log term %d", rf.me, rf.currentTerm, i, args.Entries[i].Term)
+					//log.Printf("this server %d as follower (term %d), attempting appending log at index %d with log term %d", rf.me, rf.currentTerm, i, args.Entries[i].Term)
 				}
 				// AppendEntrries 4. Append any new entries not already in the log
 				rf.logEndIndex = args.EntriesEnd
@@ -322,7 +356,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// once entries are applies in current server.
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(rf.last_entry_index)))
 		rf.syncCommitIndexAndLastApplied()
-		//log.Printntf("this server %d has updated its commit index to %d", rf.me, rf.commitIndex)
+		//log.Printf("this server %d has updated its commit index to %d", rf.me, rf.commitIndex)
 		// AppendEntries 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 
 		// first, if leadercommit > rf.commitIndex, we know there are commited entries beyong current server's
@@ -406,7 +440,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// follower send most up to date global term so that 
 		// candidate update itself upon follower receiving requestVoteRPC from an outdated condidate
 		reply.VoteGranted = false
-		//log.Printntf("this server %d (term %d) received requestVote from server %d of lower term %d, vote not granted", rf.me, rf.currentTerm, args.Term, args.CandidateId)
+		//log.Printf("this server %d (term %d) received requestVote from server %d of lower term %d, vote not granted", rf.me, rf.currentTerm, args.Term, args.CandidateId)
 		rf.persist()
 		return
 	} 
@@ -417,11 +451,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > rf.currentTerm {
 		// if a server receives requestVote rpc from any candidate of higher term, change role to follower, update term, and set voteFor to null
 		if (rf.role == candidate_role) {
-			//log.Printntf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+			//log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		} else if rf.role == leader_role{
-			//log.Printntf("this server %d was a leader in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+			//log.Printf("this server %d was a leader in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		} else {
-			//log.Printntf("this server %d was a follower in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+			//log.Printf("this server %d was a follower in term %d, and is now becoming a follower upon receicing RequestVote RPC from candidate server %d of term %d", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		}
 		rf.role = follower_role
 		rf.currentTerm = args.Term
@@ -508,7 +542,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLogIndex int, prevLogTerm int, index int, leaderCommit int, leaderLastHeartBeatTime time.Time, leaderElectionTimeOutMilliSecond int) (int, int, bool) {
-	//log.Printntf("this server %d as leader (term %d) now initiate replicating log at %d with server %d with prevLogIndex %d and prevLogTerm %d", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
+	//log.Printf("this server %d as leader (term %d) now initiate replicating log at %d with server %d with prevLogIndex %d and prevLogTerm %d", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 	for {
 		args := AppendEntriesArgs{}
 		args.Term = term
@@ -535,15 +569,15 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 			rf.mu.Unlock()
 			receivedReply = rf.sendAppendEntries(serverIndex, &args, &reply)
 			if !receivedReply {
-				//log.Printntf("this server %d as leader (term %d), attempting replicating log at index %d, did not receive reply from follower %d with prevLogIndex %d and prevLogTerm %d, initiate retry", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
+				//log.Printf("this server %d as leader (term %d), attempting replicating log at index %d, did not receive reply from follower %d with prevLogIndex %d and prevLogTerm %d, initiate retry", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 			} else {
-				//log.Printntf("this server %d as leader (term %d), attempting replicating log at index %d, successfully received reply from follower %d with prevLogIndex %d and prevLogTerm %d, now we examine the reply", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
+				//log.Printf("this server %d as leader (term %d), attempting replicating log at index %d, successfully received reply from follower %d with prevLogIndex %d and prevLogTerm %d, now we examine the reply", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 			}
 			rf.mu.Lock()
 		}
 
 		if rf.role != leader_role {
-			//log.Printntf("this server %d was leader (term %d) and its tenure has been terminated and has been switched to follower mode", leaderId, term)
+			//log.Printf("this server %d was leader (term %d) and its tenure has been terminated and has been switched to follower mode", leaderId, term)
 			defer rf.mu.Unlock()
 
 			return rf.currentTerm, sentinel_index, false
@@ -553,7 +587,7 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 			replyTerm := reply.Term
 			replySuccess := reply.Success
 			if (replyTerm > term) {
-				//log.Printntf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", leaderId, term, replyTerm, serverIndex)
+				//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", leaderId, term, replyTerm, serverIndex)
 				defer rf.mu.Unlock()
 				return replyTerm, invalid_index, false
 			} else {
@@ -561,14 +595,60 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 					// Leaders 3.2
 					// " If AppendEntries fails because of log inconsistency:
 					// decrement nextIndex and retry (�5.3)
-					//log.Printntf("this server %d as leader (term %d) fail to replicate log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, initiate retry with decrement", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
+					//log.Printf("this server %d as leader (term %d) fail to replicate log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, initiate retry with decrement", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 					
-					rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(prevLogIndex)))
+					/*rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(prevLogIndex)))
 					prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
 					prevLogTerm = default_start_term
 					if prevLogIndex != sentinel_index {
 						prevLogTerm = rf.logs[prevLogIndex].Term
-					} 
+					} */
+
+					if reply.XTerm == invalid_term {
+						// case 3, the follower simply does not have any entry at prevLogIndex
+						// we update nextIndex to end of follower log + 1 so we just skip all unnecessary empty entries
+						rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(reply.XLength + 1)))
+						prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
+						prevLogTerm = default_start_term
+						if prevLogIndex != sentinel_index {
+							prevLogTerm = rf.logs[prevLogIndex].Term
+						}
+
+					} else {
+						if rf.logs[reply.XIndex].Term != reply.XTerm {
+							// case 1, where leader simply misses entire terms of entries in follower, 
+							// the leader simply start appending from XIndex to alter all follower entries from that diverging XIndex
+							rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(reply.XIndex)))
+							// since follower does not agree with leader on the term on the XIndex where follower has its first entry 
+							// corresponding to that term, we cans simply try start appending from XIndex
+							// since it is a known inconsistency
+							prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
+							prevLogTerm = default_start_term
+							if prevLogIndex != sentinel_index {
+								prevLogTerm = rf.logs[prevLogIndex].Term
+							}
+						} else {
+							// case 2, leader and follower agree on the term in XIndex where follower has its first entry in conflicting
+							// term. Given we know there is a conflict, the follower must have more entries that belongs to
+							// conflicting term than leader as leader's term in conflicting index (prevLogIndex in last iteration) must be strictly higher.
+							// If this is the case, the follower and leader will agree
+							// on all entries up to the last entry the leader has that belongs to the follower's conflicting term.
+							// then we just start from the entry 1 higher than index of leader's last entry in given conflicting term
+							// because that is known to be the first index of inconsistency.
+							for i := reply.XIndex + 1; i <= rf.logEndIndex; i++ {
+								entry := rf.logs[i]
+								if entry.Term != reply.XTerm {
+									rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(i)))
+									break;
+								}
+							}
+							prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
+							prevLogTerm = default_start_term
+							if prevLogIndex != sentinel_index {
+								prevLogTerm = rf.logs[prevLogIndex].Term
+							}
+						}
+					}
 					rf.mu.Unlock()
 				
 					args.PrevLogIndex = prevLogIndex
@@ -577,15 +657,15 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 					// If AppendEntries fails because of log inconsistency:
 					// decrement nextIndex and retry (�5.3)
 	
-					//log.Printntf("this server %d as leader (term %d) now retries finding matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d did no receive reply, initiate retry with decrement", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
+					//log.Printf("this server %d as leader (term %d) now retries finding matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d did no receive reply, initiate retry with decrement", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 				} else {
-					//log.Printntf("this server %d as leader (term %d) has successfully found matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, so the matched index is %d", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm, prevLogIndex)
+					//log.Printf("this server %d as leader (term %d) has successfully found matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, so the matched index is %d", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm, prevLogIndex)
 					defer rf.mu.Unlock()
 					return term, prevLogIndex, true
 				}
 			}
 		} else {
-			//log.Printntf("this server %d as leader (term %d) did not find matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d within election timeout, return sentinel_index", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
+			//log.Printf("this server %d as leader (term %d) did not find matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d within election timeout, return sentinel_index", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 			defer rf.mu.Unlock()
 			return term, invalid_index, true
 		}
@@ -629,15 +709,15 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 		rf.mu.Unlock()
 		receivedReply = rf.sendAppendEntries(serverIndex, &args, &reply)
 		if !receivedReply {
-			//log.Printntf("this server %d as leader (term %d), successfully received reply when attempting append log to follower %d from entriesStart %d to entriesEnd %d, now examine reply", leaderId, term, serverIndex, entriesStart, entriesEnd)
+			//log.Printf("this server %d as leader (term %d), successfully received reply when attempting append log to follower %d from entriesStart %d to entriesEnd %d, now examine reply", leaderId, term, serverIndex, entriesStart, entriesEnd)
 		} else {
-			//log.Printntf("this server %d as leader (term %d), did not receive reply when attempting append log to follower %d from entriesStart %d to entriesEnd %d, initiate retry", leaderId, term, serverIndex, entriesStart, entriesEnd)
+			//log.Printf("this server %d as leader (term %d), did not receive reply when attempting append log to follower %d from entriesStart %d to entriesEnd %d, initiate retry", leaderId, term, serverIndex, entriesStart, entriesEnd)
 		}
 		rf.mu.Lock()
 	}
 
 	if rf.role != leader_role {
-		//log.Printntf("this server %d was leader (term %d) and its tenure has been terminated and has been switched to follower mode", leaderId, term)
+		//log.Printf("this server %d was leader (term %d) and its tenure has been terminated and has been switched to follower mode", leaderId, term)
 		return rf.currentTerm, false, false
 	} 
 
@@ -645,11 +725,11 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 		replyTerm := reply.Term
 		replySuccess := reply.Success
 		if (replyTerm > term) {
-			//log.Printntf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", leaderId, term, replyTerm, serverIndex)
+			//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", leaderId, term, replyTerm, serverIndex)
 			return replyTerm, false, false
 		} else {
 			if !replySuccess {
-				//log.Printntf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d, and I have no idea what the bloody hell just happened", leaderId, term, serverIndex, entriesStart, entriesEnd)
+				//log.Printf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d, and I have no idea what the bloody hell just happened", leaderId, term, serverIndex, entriesStart, entriesEnd)
 				return term, false, true
 			} else {
 				// Leaders 3.1
@@ -659,12 +739,12 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 				rf.nextIndex[serverIndex] = int(math.Max(float64(rf.nextIndex[serverIndex]), float64(entriesEnd + 1)))
 				rf.matchIndex[serverIndex] = int(math.Max(float64(rf.matchIndex[serverIndex]), float64(entriesEnd)))
 	
-				//log.Printntf("this server %d as leader (term %d) successfully appends log to follower %d from entriesStart %d to entriesEnd %d", leaderId, term, serverIndex, entriesStart, entriesEnd)
+				//log.Printf("this server %d as leader (term %d) successfully appends log to follower %d from entriesStart %d to entriesEnd %d", leaderId, term, serverIndex, entriesStart, entriesEnd)
 				return term, true, true
 			}
 		}
 	} else {
-		//log.Printntf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d within election timeout", leaderId, term, serverIndex, entriesStart, entriesEnd)
+		//log.Printf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d within election timeout", leaderId, term, serverIndex, entriesStart, entriesEnd)
 		return term, false, true
 	}
 
@@ -689,7 +769,7 @@ func (rf *Raft) updateCommitIndex() {
 		if matchIndexList[j] > rf.commitIndex && rf.logs[matchIndexList[j]].Term == rf.currentTerm {
 			// (1) and (3)
 			rf.commitIndex = matchIndexList[j]
-			//log.Printntf("this server %d as leader (term %d) successfully commited entry at index %d", rf.me, rf.currentTerm, rf.commitIndex)
+			//log.Printf("this server %d as leader (term %d) successfully commited entry at index %d", rf.me, rf.currentTerm, rf.commitIndex)
 			return
 		}
 	}
@@ -718,7 +798,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	defer rf.mu.Unlock()
 
 	if rf.role == leader_role {
-		
+		if rf.logStartIndex == sentinel_index {
+			rf.logStartIndex = index
+		}
 		rf.matchIndex[leaderId] = index
 		rf.logEndIndex = index
 		rf.nextIndex[leaderId] = index + 1
@@ -809,14 +891,14 @@ func (rf *Raft) actAsLeader() {
 	if rf.killed(){
 		if rf.killedMessagePrinted == 0 {
 			rf.killedMessagePrinted = 1
-			//log.Printntf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
+			//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
 		}
 		
 		defer rf.mu.Unlock()
 		
 		return
 	}
-	//log.Printntf("this server %d is now a leader of term %d", rf.me, rf.currentTerm)
+	//log.Printf("this server %d is now a leader of term %d", rf.me, rf.currentTerm)
 
 	rf.mu.Unlock()
 	cond := sync.NewCond(&rf.mu)
@@ -827,14 +909,14 @@ func (rf *Raft) actAsLeader() {
 		leaderId := rf.me
 		if rf.role != leader_role {
 			defer rf.mu.Unlock()
-			//log.Printntf("this server %d as leader (term %d) is no longer a leader", rf.me, leaderTerm)
+			//log.Printf("this server %d as leader (term %d) is no longer a leader", rf.me, leaderTerm)
 			return
 		}
 		
 		if rf.killed() {
 			if rf.killedMessagePrinted == 0 {
 				rf.killedMessagePrinted = 1
-				//log.Printntf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
+				//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
 			}
 			defer rf.mu.Unlock()
 			return
@@ -883,7 +965,7 @@ func (rf *Raft) actAsLeader() {
 						args.EmptyRPC = true
 	
 						reply := AppendEntriesReply{}
-						//log.Printntf("this server %d as leader (term %d) send heart beat to %d", leaderId, leaderTerm, serverIndex)
+						//log.Printf("this server %d as leader (term %d) send heart beat to %d", leaderId, leaderTerm, serverIndex)
 						
 						receivedReply := false
 	
@@ -898,9 +980,9 @@ func (rf *Raft) actAsLeader() {
 							rf.mu.Unlock()
 							receivedReply = rf.sendAppendEntries(serverIndex, &args, &reply)
 							if !receivedReply {
-								//log.Printntf("this server %d as leader (term %d) did not receive heartbeat reply from server %d, initiate retry", leaderId, leaderTerm, serverIndex)
+								//log.Printf("this server %d as leader (term %d) did not receive heartbeat reply from server %d, initiate retry", leaderId, leaderTerm, serverIndex)
 							} else {
-								//log.Printntf("this server %d as leader (term %d) did received heartbeat reply from server %d, now examine output", leaderId, leaderTerm, serverIndex)
+								//log.Printf("this server %d as leader (term %d) did received heartbeat reply from server %d, now examine output", leaderId, leaderTerm, serverIndex)
 							}
 							rf.mu.Lock()
 						}
@@ -912,19 +994,19 @@ func (rf *Raft) actAsLeader() {
 						}
 						
 						if receivedReply {
-							//log.Printntf("this server %d as leader (term %d) received heartbeat reply from server %d", leaderId, leaderTerm, serverIndex)
+							//log.Printf("this server %d as leader (term %d) received heartbeat reply from server %d", leaderId, leaderTerm, serverIndex)
 							if reply.Term > leaderTerm {
 								rf.currentTerm = reply.Term
 								rf.role = follower_role
 								rf.votedFor = not_voted
 								rf.persist()
-								//log.Printntf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", rf.me, leaderTerm, reply.Term, serverIndex)
+								//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", rf.me, leaderTerm, reply.Term, serverIndex)
 							} else {
-								//log.Printntf("this server %d as leader (term %d) received heart beat reply from server %d and remain a leader", rf.me, leaderTerm, serverIndex)
+								//log.Printf("this server %d as leader (term %d) received heart beat reply from server %d and remain a leader", rf.me, leaderTerm, serverIndex)
 								numHeartBeatReplyReceived++
 							}	
 						} else {
-							//log.Printntf("this server %d as leader (term %d) does not received heart beat reply from server %d within election timeout", rf.me, leaderTerm, serverIndex)
+							//log.Printf("this server %d as leader (term %d) does not received heart beat reply from server %d within election timeout", rf.me, leaderTerm, serverIndex)
 						}
 						finished++
 						cond.Broadcast()	
@@ -963,7 +1045,7 @@ func (rf *Raft) actAsLeader() {
 
 							}
 						}
-						//log.Printntf("this server %d as leader (term %d) attempts to append logs to followers %d from entriesStart %d to entriesEnd %d", leaderId, term, serverIndex, currentMatchedIndex + 1, leaderLogEndIndex)
+						//log.Printf("this server %d as leader (term %d) attempts to append logs to followers %d from entriesStart %d to entriesEnd %d", leaderId, term, serverIndex, currentMatchedIndex + 1, leaderLogEndIndex)
 						cond.Broadcast()
 						return
 					}(serverIndex, leaderTerm, leaderId, prevLogIndex, prevLogTerm, leaderCommitIndex, leaderLogEndIndex, leaderLastHeartBeatTime, leaderElectionTimeOutMilliSecond, rf)
@@ -977,7 +1059,7 @@ func (rf *Raft) actAsLeader() {
 			timeToCheck := (rf.timeLastHeartBeat).Add(time.Duration(rf.electionTimeOutMilliSecond) * time.Millisecond)	
 			currentTime := time.Now()
 			if currentTime.After(timeToCheck) {
-				//log.Printntf("this server %d as leader (term %d) did not get heartbeat reply from majority servers during election timeout, switch to follower in higher term", rf.me, rf.currentTerm)
+				//log.Printf("this server %d as leader (term %d) did not get heartbeat reply from majority servers during election timeout, switch to follower in higher term", rf.me, rf.currentTerm)
 				rf.role = follower_role
 				rf.currentTerm = rf.currentTerm + 1
 				rf.persist()
@@ -988,7 +1070,7 @@ func (rf *Raft) actAsLeader() {
 			if rf.killed() {
 				if rf.killedMessagePrinted == 0 {
 					rf.killedMessagePrinted = 1
-					//log.Printntf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
+					//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
 				}
 				rf.persist()
 				defer rf.mu.Unlock()
@@ -1001,7 +1083,7 @@ func (rf *Raft) actAsLeader() {
 		rf.syncCommitIndexAndLastApplied()
 		
 		if rf.role != leader_role {
-			//log.Printntf("this server %d as leader (term %d) is no longer a leader, and is now a follower of term %d", rf.me, leaderTerm, rf.currentTerm)
+			//log.Printf("this server %d as leader (term %d) is no longer a leader, and is now a follower of term %d", rf.me, leaderTerm, rf.currentTerm)
 			rf.persist()
 			defer rf.mu.Unlock()
 			return
@@ -1018,13 +1100,13 @@ func (rf *Raft) actAsFollower() {
 	if rf.killed() {
 		if rf.killedMessagePrinted == 0 {
 			rf.killedMessagePrinted = 1
-			//log.Printntf("the server %d as follower has been killed...", rf.me)
+			//log.Printf("the server %d as follower has been killed...", rf.me)
 		}
 		rf.persist()
 		defer rf.mu.Unlock()
 		return
 	}
-	//log.Printntf("this server %d is now a follower of term %d", rf.me, rf.currentTerm)
+	//log.Printf("this server %d is now a follower of term %d", rf.me, rf.currentTerm)
 	rf.votedFor = not_voted
 	rf.resetElectionTimeOut()
 	rf.mu.Unlock()
@@ -1035,7 +1117,7 @@ func (rf *Raft) actAsFollower() {
 		if rf.killed() {
 			if rf.killedMessagePrinted == 0 {
 				rf.killedMessagePrinted = 1
-				//log.Printntf("the server %d as follower of term %d has been killed...", rf.me, rf.currentTerm)
+				//log.Printf("the server %d as follower of term %d has been killed...", rf.me, rf.currentTerm)
 			}
 			rf.persist()
 			defer rf.mu.Unlock()
@@ -1056,7 +1138,7 @@ func (rf *Raft) actAsFollower() {
 			// RPC from current leader or granting vote to candidate:
 			// convert to candidate
 			defer rf.mu.Unlock()	
-			//log.Printntf("the server %d as follower in term %d has not heard heart beat from leader after election timeout expire, switch to candidate role", rf.me, rf.currentTerm)
+			//log.Printf("the server %d as follower in term %d has not heard heart beat from leader after election timeout expire, switch to candidate role", rf.me, rf.currentTerm)
 			rf.role = candidate_role
 			rf.persist()
 			return
@@ -1068,7 +1150,7 @@ func (rf *Raft) actAsFollower() {
 
 func (rf *Raft) actAsCandidate() {
 	rf.mu.Lock()
-	//log.Printntf("this server %d is now a candidate for term %d", rf.me, rf.currentTerm + 1)
+	//log.Printf("this server %d is now a candidate for term %d", rf.me, rf.currentTerm + 1)
 	// Candidates (�5.2) 1.1
 	// " Increment currentTerm
 	rf.currentTerm += 1
@@ -1114,7 +1196,7 @@ func (rf *Raft) actAsCandidate() {
 				args.LastLogTerm = lastLogTermThisServer
 				
 				reply := RequestVoteReply{}
-				//log.Printntf("this server %d as candidate (term %d) send requestVote to %d", candidateIdThisServer, termThisServer, serverIndex)
+				//log.Printf("this server %d as candidate (term %d) send requestVote to %d", candidateIdThisServer, termThisServer, serverIndex)
 				receivedReply := rf.sendRequestVote(serverIndex, &args, &reply)
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
@@ -1125,7 +1207,7 @@ func (rf *Raft) actAsCandidate() {
 					// (2) server is still a candidate (receiving AppendEntried RPC from server of higher term will terminate the current candidateship) and
 					// (3) election timeout when server initiate requestVote does not expire
 					rf.mu.Unlock()
-					//log.Printntf("this server %d as candidate (term %d) did not received requestVote reply from server %d, initiate retry", candidateIdThisServer, termThisServer, serverIndex)
+					//log.Printf("this server %d as candidate (term %d) did not received requestVote reply from server %d, initiate retry", candidateIdThisServer, termThisServer, serverIndex)
 					receivedReply = rf.sendRequestVote(serverIndex, &args, &reply)
 					rf.mu.Lock()
 				}
@@ -1136,21 +1218,21 @@ func (rf *Raft) actAsCandidate() {
 				}
 
 				if receivedReply {
-					//log.Printntf("this server %d as candidate (term %d) received requestVote reply from server %d", rf.me, termThisServer, serverIndex)
+					//log.Printf("this server %d as candidate (term %d) received requestVote reply from server %d", rf.me, termThisServer, serverIndex)
 					if reply.Term > termThisServer {
 						rf.currentTerm = reply.Term
 						rf.role = follower_role
-						//log.Printntf("this server %d as candidate (term %d) received higher term %d from server %d, switch to follower mode", rf.me, termThisServer, reply.Term, serverIndex)
+						//log.Printf("this server %d as candidate (term %d) received higher term %d from server %d, switch to follower mode", rf.me, termThisServer, reply.Term, serverIndex)
 					} else {
 						if reply.VoteGranted {
-							//log.Printntf("this server %d as candidate (term %d) received vote from server %d", rf.me, termThisServer, serverIndex)
+							//log.Printf("this server %d as candidate (term %d) received vote from server %d", rf.me, termThisServer, serverIndex)
 							voteCount++
 						} else {
-							//log.Printntf("this server %d as candidate (term %d) did not received vote from server %d", rf.me, termThisServer, serverIndex)
+							//log.Printf("this server %d as candidate (term %d) did not received vote from server %d", rf.me, termThisServer, serverIndex)
 						}
 					}		
 				} else {
-					//log.Printntf("this server %d as candidate (term %d) did not receive requestVote reply from server %d", rf.me, termThisServer, serverIndex)
+					//log.Printf("this server %d as candidate (term %d) did not receive requestVote reply from server %d", rf.me, termThisServer, serverIndex)
 				}
 				finished++
 				cond.Broadcast()
@@ -1167,7 +1249,7 @@ func (rf *Raft) actAsCandidate() {
 		// Candidates (�5.2) 4:
 		// " If election timeout elapses: start new election
 		if currentTime.After(timeToCheck) {
-			//log.Printntf("this server %d as candidate did not get reply from all servers during election timeout, restart election", rf.me)
+			//log.Printf("this server %d as candidate did not get reply from all servers during election timeout, restart election", rf.me)
 			rf.role = candidate_role
 			return
 		}
@@ -1175,7 +1257,7 @@ func (rf *Raft) actAsCandidate() {
 		if rf.killed() {
 			if rf.killedMessagePrinted == 0 {
 				rf.killedMessagePrinted = 1
-				//log.Printntf("the server %d as candidate of term %d has been killed...", rf.me, rf.currentTerm)
+				//log.Printf("the server %d as candidate of term %d has been killed...", rf.me, rf.currentTerm)
 			}
 			return
 		}
@@ -1183,7 +1265,7 @@ func (rf *Raft) actAsCandidate() {
 	}
 	rf.syncCommitIndexAndLastApplied()
 	if rf.role == follower_role {
-		//log.Printntf("this server %d as candidate has been turned to a follower upon receiving AppendEntries RPC from a leader of greater or equal term", rf.me)
+		//log.Printf("this server %d as candidate has been turned to a follower upon receiving AppendEntries RPC from a leader of greater or equal term", rf.me)
 		return
 	}
 	// Candidates (�5.2) 2:
@@ -1192,11 +1274,11 @@ func (rf *Raft) actAsCandidate() {
 		rf.role = leader_role
 		rf.initLeader()
 
-		//log.Printntf("this server %d as candidate has been turned to a leader upon receiving vote from a group of quorum", rf.me)
+		//log.Printf("this server %d as candidate has been turned to a leader upon receiving vote from a group of quorum", rf.me)
 		return
 	} else {
 		rf.role = follower_role
-		//log.Printntf("this server %d as candidate has been turned to a follower upon not receiving vote from a group of quorum", rf.me)
+		//log.Printf("this server %d as candidate has been turned to a follower upon not receiving vote from a group of quorum", rf.me)
 		return
 	}
 }
