@@ -163,7 +163,7 @@ func (rf *Raft) readPersist(data []byte) error {
 	   d.Decode(&logStartIndex) != nil ||
 	   d.Decode(&logEndIndex) != nil {
 		
-		////log.Printf("could not read persistent state for this server. Either there has been no persistent state or there is error in reading.")
+		//log.Printf("could not read persistent state for this server. Either there has been no persistent state or there is error in reading.")
 		return errors.New("could not read persistent state for this server. Either there has been no persistent state or there is error in reading.")
 	} else {
 		rf.currentTerm = currentTerm
@@ -241,8 +241,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.role = follower_role
 			rf.currentTerm = args.Term
 			rf.votedFor = -1
-			rf.persist()
-
 		}
 
 		// rule 2, which is triggered for candidate_role if terms are equal, which also indecates there is a new leader
@@ -251,7 +249,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.role = follower_role
 			rf.currentTerm = args.Term
 			rf.votedFor = -1
-			rf.persist()
 		}
 
 		// briefly sumarize it
@@ -315,7 +312,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 							// Append Entries 3. If an existing entry conflicts with a new one 
 							// (same index but different terms), delete the existing entry and all that
 							// follow it (�5.3)
-							rf.persist()
 						} else {
 							reply.Term = args.Term
 							reply.Success = true
@@ -333,6 +329,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					rf.logs[i] = &logToAppend
 					//log.Printf("this server %d as follower (term %d), attempting appending log at index %d with log term %d", rf.me, rf.currentTerm, i, args.Entries[i].Term)
 				}
+				//log.Printf("this server %d as follower (term %d), successfully appended log from startIndex %d to endIndex %d", rf.me, rf.currentTerm, args.EntriesStart, args.EntriesEnd)
 				// AppendEntrries 4. Append any new entries not already in the log
 				rf.logEndIndex = args.EntriesEnd
 
@@ -341,7 +338,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 				reply.Term = args.Term
 				reply.Success = true
-				rf.persist()
+				
 			}
 		}
 	}
@@ -355,7 +352,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// and we do not want to commit those different entries since that could cause inconsistent state between current server and the current leader 
 		// once entries are applies in current server.
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(rf.last_entry_index)))
-		rf.syncCommitIndexAndLastApplied()
+		go rf.syncCommitIndexAndLastApplied()
 		//log.Printf("this server %d has updated its commit index to %d", rf.me, rf.commitIndex)
 		// AppendEntries 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 
@@ -373,6 +370,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// handled before this one and
 		
 	}
+	rf.persist()
 
 }
 
@@ -441,7 +439,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// candidate update itself upon follower receiving requestVoteRPC from an outdated condidate
 		reply.VoteGranted = false
 		//log.Printf("this server %d (term %d) received requestVote from server %d of lower term %d, vote not granted", rf.me, rf.currentTerm, args.Term, args.CandidateId)
-		rf.persist()
 		return
 	} 
 	
@@ -459,8 +456,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 		rf.role = follower_role
 		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.persist()
+		rf.votedFor = not_voted
 	}
 
 	// note we don't do Candidates (�5.2) 3:
@@ -503,7 +499,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	
 	reply.Term = args.Term
 	reply.VoteGranted = false
-
+	rf.persist()
 	return
 }
 
@@ -543,12 +539,15 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLogIndex int, prevLogTerm int, index int, leaderCommit int, leaderLastHeartBeatTime time.Time, leaderElectionTimeOutMilliSecond int) (int, int, bool) {
 	//log.Printf("this server %d as leader (term %d) now initiate replicating log at %d with server %d with prevLogIndex %d and prevLogTerm %d", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
+
+	prevLogIndexWtf :=  prevLogIndex
+	prevLogTermWtf := prevLogTerm
 	for {
 		args := AppendEntriesArgs{}
 		args.Term = term
 		args.LeaderId = leaderId
-		args.PrevLogIndex = prevLogIndex
-		args.PrevLogTerm = prevLogTerm
+		args.PrevLogIndex = prevLogIndexWtf
+		args.PrevLogTerm = prevLogTermWtf
 
 		args.LeaderCommit = leaderCommit
 
@@ -559,6 +558,7 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 		reply := AppendEntriesReply{}
 
 		receivedReply := false
+
 		rf.mu.Lock()
 		
 		for timeToCheck, currentTime := (leaderLastHeartBeatTime).Add(time.Duration(leaderElectionTimeOutMilliSecond) * time.Millisecond), time.Now(); !receivedReply && rf.role == leader_role && !currentTime.After(timeToCheck); {
@@ -607,25 +607,34 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 					if reply.XTerm == invalid_term {
 						// case 3, the follower simply does not have any entry at prevLogIndex
 						// we update nextIndex to end of follower log + 1 so we just skip all unnecessary empty entries
-						rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(reply.XLength + 1)))
-						prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
-						prevLogTerm = default_start_term
-						if prevLogIndex != sentinel_index {
-							prevLogTerm = rf.logs[prevLogIndex].Term
+						
+						//rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(reply.XLength + 1)))
+						rf.nextIndex[serverIndex] = reply.XLength + 1
+						
+						//prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
+						prevLogIndexWtf = rf.nextIndex[serverIndex] - 1
+						prevLogTermWtf = default_start_term
+						if prevLogIndexWtf != sentinel_index {
+							prevLogTermWtf= rf.logs[prevLogIndexWtf].Term
 						}
 
 					} else {
 						if rf.logs[reply.XIndex].Term != reply.XTerm {
 							// case 1, where leader simply misses entire terms of entries in follower, 
 							// the leader simply start appending from XIndex to alter all follower entries from that diverging XIndex
-							rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(reply.XIndex)))
+							
+							//rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(reply.XIndex)))
+							rf.nextIndex[serverIndex] = reply.XIndex
+							
 							// since follower does not agree with leader on the term on the XIndex where follower has its first entry 
 							// corresponding to that term, we cans simply try start appending from XIndex
 							// since it is a known inconsistency
-							prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
-							prevLogTerm = default_start_term
-							if prevLogIndex != sentinel_index {
-								prevLogTerm = rf.logs[prevLogIndex].Term
+							
+							//prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
+							prevLogIndexWtf = rf.nextIndex[serverIndex] - 1
+							prevLogTermWtf = default_start_term
+							if prevLogIndexWtf != sentinel_index {
+								prevLogTermWtf= rf.logs[prevLogIndexWtf].Term
 							}
 						} else {
 							// case 2, leader and follower agree on the term in XIndex where follower has its first entry in conflicting
@@ -638,21 +647,21 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 							for i := reply.XIndex + 1; i <= rf.logEndIndex; i++ {
 								entry := rf.logs[i]
 								if entry.Term != reply.XTerm {
-									rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(i)))
+									//rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(i)))
+									rf.nextIndex[serverIndex] = i
 									break;
 								}
 							}
-							prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
-							prevLogTerm = default_start_term
-							if prevLogIndex != sentinel_index {
-								prevLogTerm = rf.logs[prevLogIndex].Term
+							//prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
+							prevLogIndexWtf = rf.nextIndex[serverIndex] - 1
+							prevLogTermWtf = default_start_term
+							if prevLogIndexWtf != sentinel_index {
+								prevLogTermWtf= rf.logs[prevLogIndexWtf].Term
 							}
 						}
 					}
 					rf.mu.Unlock()
 				
-					args.PrevLogIndex = prevLogIndex
-					args.PrevLogTerm = prevLogTerm
 					// Leaders 3.1
 					// If AppendEntries fails because of log inconsistency:
 					// decrement nextIndex and retry (�5.3)
@@ -661,7 +670,7 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 				} else {
 					//log.Printf("this server %d as leader (term %d) has successfully found matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, so the matched index is %d", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm, prevLogIndex)
 					defer rf.mu.Unlock()
-					return term, prevLogIndex, true
+					return term, prevLogIndexWtf, true
 				}
 			}
 		} else {
@@ -736,9 +745,11 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 				// " If successful: update nextIndex and matchIndex for
 				// follower (�5.3)
 		
-				rf.nextIndex[serverIndex] = int(math.Max(float64(rf.nextIndex[serverIndex]), float64(entriesEnd + 1)))
-				rf.matchIndex[serverIndex] = int(math.Max(float64(rf.matchIndex[serverIndex]), float64(entriesEnd)))
-	
+				//rf.nextIndex[serverIndex] = int(math.Max(float64(rf.nextIndex[serverIndex]), float64(entriesEnd + 1)))
+				rf.nextIndex[serverIndex] = entriesEnd + 1
+				
+				//rf.matchIndex[serverIndex] = int(math.Max(float64(rf.matchIndex[serverIndex]), float64(entriesEnd)))
+				rf.matchIndex[serverIndex] = entriesEnd
 				//log.Printf("this server %d as leader (term %d) successfully appends log to follower %d from entriesStart %d to entriesEnd %d", leaderId, term, serverIndex, entriesStart, entriesEnd)
 				return term, true, true
 			}
@@ -751,6 +762,8 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 }
 
 func (rf *Raft) updateCommitIndex() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	numberOfPeers := len(rf.peers)
 	matchIndexList := make([]int, numberOfPeers)
 	for i := 0; i < numberOfPeers; i++ {
@@ -856,7 +869,8 @@ func generateElectionTimeoutMilliSecond() int{
 }
 
 func (rf *Raft) syncCommitIndexAndLastApplied() {
-	
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	for rf.lastApplied < rf.commitIndex {
 		rf.lastApplied += 1
 		applyMsg := ApplyMsg{}
@@ -900,6 +914,7 @@ func (rf *Raft) actAsLeader() {
 	}
 	//log.Printf("this server %d is now a leader of term %d", rf.me, rf.currentTerm)
 
+	rf.persist()
 	rf.mu.Unlock()
 	cond := sync.NewCond(&rf.mu)
 
@@ -1076,11 +1091,11 @@ func (rf *Raft) actAsLeader() {
 				defer rf.mu.Unlock()
 				return
 			}
-			rf.updateCommitIndex()
+			go rf.updateCommitIndex()
 			cond.Wait()
 		}
 
-		rf.syncCommitIndexAndLastApplied()
+		go rf.syncCommitIndexAndLastApplied()
 		
 		if rf.role != leader_role {
 			//log.Printf("this server %d as leader (term %d) is no longer a leader, and is now a follower of term %d", rf.me, leaderTerm, rf.currentTerm)
@@ -1109,6 +1124,7 @@ func (rf *Raft) actAsFollower() {
 	//log.Printf("this server %d is now a follower of term %d", rf.me, rf.currentTerm)
 	rf.votedFor = not_voted
 	rf.resetElectionTimeOut()
+	rf.persist()
 	rf.mu.Unlock()
 
 	for {
@@ -1131,7 +1147,7 @@ func (rf *Raft) actAsFollower() {
 
 		timeToCheck := (rf.timeLastHeartBeat).Add(time.Duration(rf.electionTimeOutMilliSecond) * time.Millisecond)	
 		currentTime := time.Now()
-		rf.syncCommitIndexAndLastApplied()
+		go rf.syncCommitIndexAndLastApplied()
 		if currentTime.After(timeToCheck) {
 			// Followers (�5.2) 2
 			// If election timeout elapses without receiving AppendEntries
@@ -1263,7 +1279,7 @@ func (rf *Raft) actAsCandidate() {
 		}
 		cond.Wait()
 	}
-	rf.syncCommitIndexAndLastApplied()
+	go rf.syncCommitIndexAndLastApplied()
 	if rf.role == follower_role {
 		//log.Printf("this server %d as candidate has been turned to a follower upon receiving AppendEntries RPC from a leader of greater or equal term", rf.me)
 		return
