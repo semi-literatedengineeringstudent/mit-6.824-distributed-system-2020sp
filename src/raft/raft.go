@@ -555,14 +555,14 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLogIndex int, prevLogTerm int, index int, leaderCommit int) (int, int, bool) {
 	//log.Printf("this server %d as leader (term %d) now initiate replicating log at %d with server %d with prevLogIndex %d and prevLogTerm %d", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 
-	prevLogIndexWtf :=  prevLogIndex
-	prevLogTermWtf := prevLogTerm
+	prevLogIndexRpc :=  prevLogIndex
+	prevLogTermRpc := prevLogTerm
 	for {
 		args := AppendEntriesArgs{}
 		args.Term = term
 		args.LeaderId = leaderId
-		args.PrevLogIndex = prevLogIndexWtf
-		args.PrevLogTerm = prevLogTermWtf
+		args.PrevLogIndex = prevLogIndexRpc
+		args.PrevLogTerm = prevLogTermRpc
 
 		args.LeaderCommit = leaderCommit
 
@@ -572,7 +572,6 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 
 		reply := AppendEntriesReply{}
 
-		
 		receivedReply := rf.sendAppendEntries(serverIndex, &args, &reply)
 
 		rf.mu.Lock()
@@ -605,28 +604,25 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 						
 						prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
 						
-						prevLogTermWtf = default_start_term
-						if prevLogIndexWtf != sentinel_index {
-							prevLogTermWtf= rf.logs[prevLogIndexWtf].Term
+						prevLogTermRpc = default_start_term
+						if prevLogIndexRpc != sentinel_index {
+							prevLogTermRpc= rf.logs[prevLogIndexRpc].Term
 						}
-
 					} else {
 						if rf.logs[reply.XIndex].Term != reply.XTerm {
 							// case 1, where leader simply misses entire terms of entries in follower, 
 							// the leader simply start appending from XIndex to alter all follower entries from that diverging XIndex
 							
 							rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(reply.XIndex)))
-							//rf.nextIndex[serverIndex] = reply.XIndex
 							
 							// since follower does not agree with leader on the term on the XIndex where follower has its first entry 
 							// corresponding to that term, we cans simply try start appending from XIndex
 							// since it is a known inconsistency
 							
 							prevLogIndex = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
-							//prevLogIndexWtf = rf.nextIndex[serverIndex] - 1
-							prevLogTermWtf = default_start_term
-							if prevLogIndexWtf != sentinel_index {
-								prevLogTermWtf= rf.logs[prevLogIndexWtf].Term
+							prevLogTermRpc = default_start_term
+							if prevLogIndexRpc != sentinel_index {
+								prevLogTermRpc= rf.logs[prevLogIndexRpc].Term
 							}
 						} else {
 							// case 2, leader and follower agree on the term in XIndex where follower has its first entry in conflicting
@@ -640,15 +636,13 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 								entry := rf.logs[i]
 								if entry.Term != reply.XTerm {
 									rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(i)))
-									//rf.nextIndex[serverIndex] = i
 									break;
 								}
 							}
-							prevLogIndexWtf = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
-							//prevLogIndexWtf = rf.nextIndex[serverIndex] - 1
-							prevLogTermWtf = default_start_term
-							if prevLogIndexWtf != sentinel_index {
-								prevLogTermWtf= rf.logs[prevLogIndexWtf].Term
+							prevLogIndexRpc = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndex - 1)))
+							prevLogTermRpc = default_start_term
+							if prevLogIndexRpc != sentinel_index {
+								prevLogTermRpc= rf.logs[prevLogIndexRpc].Term
 							}
 						}
 					}
@@ -662,7 +656,7 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 				} else {
 					//log.Printf("this server %d as leader (term %d) has successfully found matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, so the matched index is %d", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm, prevLogIndex)
 					defer rf.mu.Unlock()
-					return term, prevLogIndexWtf, true
+					return term, prevLogIndexRpc, true
 				}
 			}
 		} else {
@@ -757,7 +751,6 @@ func (rf *Raft) updateCommitIndex() {
 	sort.Sort(sort.Reverse(sort.IntSlice(matchIndexList)))
 
 	// Leaders 4
-	// (2)
 	// If there exists an N such that N > commitIndex(1), a majority
 	// of matchIndex[i] e N(2), and log[N].term == currentTerm(3):
 	// set commitIndex = N (�5.3, �5.4).
@@ -857,7 +850,6 @@ func generateElectionTimeoutMilliSecond() int{
 }
 
 func (rf *Raft) syncCommitIndexAndLastApplied() {
-
 	for {
 		rf.applyMsgCond.L.Lock()
 		if rf.killed() {
