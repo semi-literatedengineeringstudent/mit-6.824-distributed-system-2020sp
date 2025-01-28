@@ -23,6 +23,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Key   string
+	Value string
+	Op    string
+
+	Serial_Number int64
 }
 
 type KVServer struct {
@@ -35,11 +40,48 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+
+	processQueue map[int64]bool
+	processedReplied map[int64]*StoredReply // store the replies that has been processed
+
+	db map[string]string
+}
+
+type StoredReply struct {
+	Err Err
+	Value string
 }
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	term, isLeader = kv.rf.GetState()
+	if !isLeader {
+		replyToStore := StoredReply{}
+		replyToStore.Err = ErrWrongLeader
+		replyToStore.Value = empty_string
+
+		kv.processedReplied[args.Serial_Number] = &replyToStore
+
+		reply.Err = ErrWrongLeader
+		reply.Value = empty_string
+
+		return
+	} else {
+		exist, ok := kv.processedReplied[args.Serial_Number]
+		if !ok {
+			opToRaft := Op{}
+			opToRaft.Key = args.Key
+			opToRaft.Op = Get
+			opToRaft.Serial_Number = args.Serial_Number
+
+			
+		}
+	}
+
+
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -97,5 +139,53 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
+	kv.processedReplied = make(map[int64]*StoredReply)
+	kv.processQueue = make(map[int64]bool)
+
+	kv.db = make(map[string]string)
+
+	go func(kv *KVServer) {
+		kv.mu.Lock()
+		if kv.killed(){
+			kv.mu.Unlock()
+			time.Sleep(time.Duration(killed_kvserver_busywait_avoid_time_millisecond) * time.Millisecond)
+		} else {
+
+			for appliedMessage := range kv.applyCh {
+				operation := appliedMessage.Command
+
+				key := operation.Key
+				value := operation.Value
+				op := operation.Op
+				serial_number := operation.Serial_Number
+
+				replyToStore := StoredReply{}
+
+				if op == Get {
+					dbvalue, ok:= kv.db[key]
+					if ok {
+						replyToStore.Err = OK
+						replyToStore.Value = dbvalue
+					} else {
+						replyToStore.Err = ErrNoKey
+					}
+				} else if (op == Put) {
+					kv.db[key] = value
+					replyToStore.Err = OK
+				} else {
+					dbvalue, ok:= kv.db[key]
+					if ok {
+						kv.db[key] = dbvalue + value
+					} else {
+						kv.db[key] =  value
+					}
+					replyToStore.Err = OK
+				}
+				kv.processedReplied[serial_number] = &replyToStore
+				kv.mu.Unlock()
+				time.Sleep(time.Duration(kvserver_loop_wait_time_millisecond) * time.Millisecond)
+			}
+		}
+	}(kv)
 	return kv
 }

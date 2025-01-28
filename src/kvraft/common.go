@@ -4,6 +4,10 @@ const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
+
+	Get            = "Get" // on existiing key, return most recent value, on non-existing key, return ErrNoKey
+	Put            = "Put" // on existing key or non-existing key, replace
+	Append         = "Append" // on existing key, concatenate, on non-existing key, act like put
 )
 
 type Err string
@@ -16,6 +20,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+
+	Serial_Number int64
 }
 
 type PutAppendReply struct {
@@ -25,6 +31,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+
+	Serial_Number int64
 }
 
 type GetReply struct {

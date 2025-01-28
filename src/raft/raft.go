@@ -79,6 +79,7 @@ type Raft struct {
 	last_entry_index int // the index of last entry the leader of most recent term that initiate RPC call to the server sent to the server
 	last_entry_term int // the most recent term in which the server receives entries from  AppendEntries call from leader corresponding to last_entry_index
 	
+	currentLeaderId int // the most current known leader Id, used in lab 3 so each server can redirect client rpc call to leader
 	// volatile states on leaders
 	nextIndex []int 
 	// on each server, index of the next log entry the leader's new entry, if successfully appended, will be appended to, init as leader logEndIndex + 1 for each server
@@ -95,6 +96,7 @@ type Raft struct {
 	killedMessagePrinted int
 
 	applyChRaft chan ApplyMsg
+
 
 }
 
@@ -385,6 +387,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// handled before this one and
 		
 	}
+
+	rf.currentLeaderId = args.LeaderId
 	rf.persist()
 
 }
@@ -924,12 +928,11 @@ func (rf *Raft) actAsLeader() {
 	leaderTerm := rf.currentTerm
 	numberOfPeers := len(rf.peers)
 
+	rf.currentLeaderId = rf.me
+
 	rf.persist()
 	rf.mu.Unlock()
-	//cond := sync.NewCond(&rf.mu)
 	for {
-		//finished := 1
-		//numHeartBeatReplyReceived := 1
 		for i := 0; i < numberOfPeers; i++ {
 			serverIndex := i
 			if serverIndex != leaderId {
@@ -1140,6 +1143,8 @@ func (rf *Raft) actAsCandidate() {
 
 	numberOfPeers := len(rf.peers)
 
+	rf.currentLeaderId = invalid_leader
+
 	rf.persist()
 	rf.mu.Unlock()
 
@@ -1287,6 +1292,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = sentinel_index
 	rf.last_entry_index = sentinel_index
 	rf.last_entry_term = default_start_term
+
+	rf.currentLeaderId = invalid_leader
 	
 	// initialize timeLastHeartBeat and electionTimeOutMilliSecond on followers, all servers start as followers
 	rf.resetElectionTimeOut()
