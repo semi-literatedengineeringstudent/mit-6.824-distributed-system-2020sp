@@ -4,10 +4,26 @@ import "../labrpc"
 import "crypto/rand"
 import "math/big"
 
+//import "log"
+
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	numberOfServers int
+
+	currentLeaderId int
+	currentLeaderTerm int
+
+	prevRequests []int64
+}
+
+func (ck *Clerk)randServer() int {
+
+	// Generate a random number between 0 and numberOfServers - 1
+	serverIndex, _ := rand.Int(rand.Reader, big.NewInt(int64(ck.numberOfServers)))
+
+	return int(serverIndex.Int64())
 }
 
 func nrand() int64 {
@@ -21,6 +37,13 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.numberOfServers = len(servers)
+
+	ck.currentLeaderId = invalid_leader
+	ck.currentLeaderTerm = invalid_term
+
+	ck.prevRequests = make([]int64, 0)
+
 	return ck
 }
 
@@ -37,9 +60,54 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
 	// You will have to modify this function.
-	return ""
+	args := GetArgs{}
+
+	args.Key = key
+	args.Serial_Number = nrand()
+	args.PrevRequests = make([]int64, 0)
+	for i := 0; i < len(ck.prevRequests); i++ {
+		args.PrevRequests = append(args.PrevRequests, ck.prevRequests[i])
+	}
+
+	//log.printf("initiate Get request with key %s and serial number %d", op, key, args.Serial_Number)
+
+	reply := GetReply{}
+
+	for {
+		leaderId := ck.currentLeaderId
+
+		if (leaderId  == invalid_leader) {
+			leaderId = ck.randServer()
+		} 
+
+		ok := ck.servers[leaderId].Call("KVServer.Get", &args, &reply)
+		if ok {
+			error := reply.Err
+			if (error == OK) {
+				//log.printf("Get request with key %s and serial number %d is successful", op, key, args.Serial_Number)
+				ck.prevRequests = append(ck.prevRequests, args.Serial_Number)
+				return reply.Value
+			} else if (error == ErrNoKey) {
+				//log.printf("No key, Get request with key %s and serial number %d has failed", op, key, args.Serial_Number)
+				return empty_string
+			} else if (error == ErrServerKilled) {
+				//log.printf("server with id %d of term %d has been killed, Get request with key %s and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, key, args.Serial_Number)
+				ck.currentLeaderId = invalid_leader
+			} else {
+				//log.printf("server with id %d of term %d has been lost leadership/or is not leader, Get request with key %s and serial number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId,  ck.currentLeaderTerm, key, args.Serial_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+				if (reply.CurrentLeaderTerm >= ck.currentLeaderTerm) {
+					ck.currentLeaderId = reply.CurrentLeaderId
+					ck.currentLeaderTerm = reply.CurrentLeaderTerm
+				}
+			}
+		} else {
+			//log.printf("did not receive reply from server with id %d of term %d, Get request with key %s and serial number %d is unsuccessful possibily due to network partitiob, retry with same server",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number)
+			ck.currentLeaderId = ck.randServer()
+		}
+	}
+
+	return empty_string
 }
 
 //
@@ -54,6 +122,52 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+
+	args := PutAppendArgs{}
+
+	args.Key = key
+	args.Value = value
+	args.Op = op
+
+	args.Serial_Number = nrand()
+	args.PrevRequests = make([]int64, 0)
+	for i := 0; i < len(ck.prevRequests); i++ {
+		args.PrevRequests = append(args.PrevRequests, ck.prevRequests[i])
+	}
+
+	//log.printf("initiate %s request with (key %s, value %s) and serial number %d", op, key, value, args.Serial_Number)
+
+	reply := PutAppendReply{}
+
+	for {
+		leaderId := ck.currentLeaderId
+		
+		if (leaderId  == invalid_leader) {
+			leaderId = ck.randServer()
+		} 
+
+		ok := ck.servers[leaderId].Call("KVServer.PutAppend", &args, &reply)
+		if ok {
+			error := reply.Err
+			if (error == OK) {
+				//log.printf("%s request with (key %s, value %s) and serial number %d is successful", op, key, value, args.Serial_Number)
+				ck.prevRequests = append(ck.prevRequests, args.Serial_Number)
+				return 
+			} else if (error == ErrServerKilled) {
+				//log.printf("server with id %d of term %d has been killed, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number)
+				ck.currentLeaderId = invalid_leader
+			} else {
+				if (reply.CurrentLeaderTerm >= ck.currentLeaderTerm) {
+					//log.printf("server with id %d of term %d has been lost leadership/or not a leader, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+					ck.currentLeaderId = reply.CurrentLeaderId
+					ck.currentLeaderTerm = reply.CurrentLeaderTerm
+				}
+			}
+		} else {
+			//log.printf("did not receive reply from server with id %d of term %d, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number)
+			ck.currentLeaderId = ck.randServer()
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

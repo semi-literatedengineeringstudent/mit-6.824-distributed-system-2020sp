@@ -180,6 +180,13 @@ func (rf *Raft) applyMessage(applyMsg ApplyMsg) {
 	rf.applyChRaft <- applyMsg
 }
 
+func(rf *Raft) GetCurrentLeaderIdAndTerm() (int, int){
+	defer rf.mu.Unlock()
+
+	rf.mu.Lock()
+	return rf.currentLeaderId, rf.currentTerm
+}
+
 type AppendEntriesArgs struct {
 	Term int // leader's term
 	LeaderId int // so follower can redirect clients (used in labs after 2)
@@ -240,7 +247,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			rf.role = follower_role
 			rf.currentTerm = args.Term
-			rf.votedFor = -1
+			rf.votedFor = not_voted
+
+			rf.currentLeaderId = args.LeaderId
 		}
 
 		// rule 2, which is triggered for candidate_role if terms are equal, which also indecates there is a new leader
@@ -248,15 +257,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			//log.Printf("this server %d was a candidate in term %d, and is now becoming a follower upon receicing AppendEntries RPC from leader server %d of term %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 			rf.role = follower_role
 			rf.currentTerm = args.Term
-			rf.votedFor = -1
-		}
+			rf.votedFor = not_voted
 
+			rf.currentLeaderId = args.LeaderId
+
+		}
 		// briefly sumarize it
 		// follower updates its term if receiving rpc from leader of higher term
 		// leader updates its term if receiving rpc from leader of higher term (which is guaranteed due to safe election property)
 		// and switch to follower
 		// candidate updates upon either receiving rpc from leader of higher term or same term (someone else becomes leader before you)
-
+		
 		if args.EmptyRPC {
 			reply.Term = args.Term
 			reply.Success = true
@@ -388,9 +399,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		
 	}
 
-	rf.currentLeaderId = args.LeaderId
 	rf.persist()
 
+	return
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -476,6 +487,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.role = follower_role
 		rf.currentTerm = args.Term
 		rf.votedFor = not_voted
+
+		rf.currentLeaderId = invalid_leader
 	}
 
 	// note we don't do Candidates (�5.2) 3:
@@ -794,6 +807,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	leaderId := rf.me
 	defer rf.mu.Unlock()
 
+	if rf.killed() {
+		return invalid_index, invalid_term, false
+	}
+
 	if rf.role == leader_role {
 		if rf.logStartIndex == sentinel_index {
 			rf.logStartIndex = index
@@ -835,6 +852,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	//close(rf.applyChRaft)
 }
 
 func (rf *Raft) killed() bool {
@@ -981,7 +999,7 @@ func (rf *Raft) actAsLeader() {
 						args.LeaderCommit = leaderCommitIndex
 	
 						args.EmptyRPC = true
-	
+						time.Sleep(time.Duration(leader_heartbeat_millisecond) * time.Millisecond)
 						reply := AppendEntriesReply{}
 						//log.Printf("this server %d as leader (term %d) send heart beat to %d", leaderId, leaderTerm, serverIndex)
 						
@@ -1057,7 +1075,7 @@ func (rf *Raft) actAsLeader() {
 				}
 			}
 		}
-		go rf.updateCommitIndex()
+		//rf.updateCommitIndex()
 		time.Sleep(time.Duration(leader_heartbeat_millisecond) * time.Millisecond)
 	}
 }
