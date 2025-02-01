@@ -5,9 +5,8 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
 
-	Get            = "Get" // on existiing key, return most recent value, on non-existing key, return ErrNoKey
-	Put            = "Put" // on existing key or non-existing key, replace
-	Append         = "Append" // on existing key, concatenate, on non-existing key, act like put
+	ErrServerKilled  = "ErrServerKilled"
+
 )
 
 type Err string
@@ -22,10 +21,15 @@ type PutAppendArgs struct {
 	// otherwise RPC will break.
 
 	Serial_Number int64
+
+	PrevRequests []int64
 }
 
 type PutAppendReply struct {
 	Err Err
+
+	CurrentLeaderId int
+	CurrentLeaderTerm int
 }
 
 type GetArgs struct {
@@ -33,9 +37,14 @@ type GetArgs struct {
 	// You'll have to add definitions here.
 
 	Serial_Number int64
+
+	PrevRequests []int64
 }
 
 type GetReply struct {
 	Err   Err
 	Value string
+
+	CurrentLeaderId int
+	CurrentLeaderTerm int
 }
