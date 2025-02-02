@@ -44,7 +44,8 @@ type KVServer struct {
 	// Your definitions here.
 
 	processQueue map[int64]bool // store the serial numbers for requests that have not been processed
-	processedReplied map[int64]*StoredReply // store the replies that has been processed
+	deletedReplies map[int64]bool // store the serial numbers for requests that has been processed and deleted from cache as client declare 'I got this'
+	processedReplies map[int64]*StoredReply // store the replies that has been processed
 
 	db map[string]string
 }
@@ -75,19 +76,22 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	key := args.Key
 	serial_number := args.Serial_Number
 
-	//log.printf("This server %d has received Get request with key %d and serial number %d", ck.me, key, serial_number)
+	//log.Printf("This server %d has received Get request with key %s and serial number %d", kv.me, key, serial_number)
 
 	if kv.killed() {
 		reply.Err = ErrServerKilled
-		//log.printf("This server %d has been killed", ck.me)
+		//log.Printf("This server %d has been killed", kv.me)
 		return
 	} 
 
 	for i := 0; i < len(args.PrevRequests); i++ {
 		serialNumberProbe := args.PrevRequests[i]
-		_, okCachedProbe := kv.processedReplied[serialNumberProbe]
+		//cachedResult, okCachedProbe := kv.processedReplies[serialNumberProbe]
+		_, okCachedProbe := kv.processedReplies[serialNumberProbe]
 		if okCachedProbe {
-			delete(kv.processedReplied, serialNumberProbe)
+			//log.Printf("This server %d is removing cached result for request with serial number %d, cached value is %s", kv.me, serialNumberProbe , cachedResult.Value)
+			delete(kv.processedReplies, serialNumberProbe)
+			kv.deletedReplies[serialNumberProbe] = true
 		}
 	}
 	// removed reply to previous rpc already finished
@@ -95,7 +99,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	term, isLeader := kv.rf.GetState()
 
 	if !isLeader {
-		//log.printf("This server %d has received Get request with key %d and serial number %d but is not leader, re route to leader %d of term %d", ck.me, key, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+		//log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 		kv.tryDeleteRequestQueue()
 		reply.Err = ErrWrongLeader
 		reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm() 
@@ -103,13 +107,15 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	} else {
 		kv.tryInitRequestQueue()
 
-		cachedReply, okCached := kv.processedReplied[serial_number]
+		cachedReply, okCached := kv.processedReplies[serial_number]
 		if okCached {
 			reply.Err = cachedReply.Err
 			reply.Value = cachedReply.Value
 
 			reply.CurrentLeaderId = kv.me
 			reply.CurrentLeaderTerm = term
+
+			//log.Printf("This server %d has cached result for Get request with key %s and serial number %d ", kv.me, key, serial_number)
 			
 			return
 		} else {
@@ -123,11 +129,13 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 				opToRaft.Serial_Number = serial_number
 				_, _, isLeader := kv.rf.Start(opToRaft)
 				if !isLeader {
+					//log.Printf("This server %d has cached result for Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 					kv.tryDeleteRequestQueue()
 					reply.Err = ErrWrongLeader
 					reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm() 
 					return
 				} else {
+					//log.Printf("This server %d does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", kv.me, key, serial_number)
 					kv.processQueue[serial_number] = true
 					kv.mu.Unlock()
 				}
@@ -136,26 +144,31 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			for {
 				kv.mu.Lock()
 				if kv.killed() {
+					//log.Printf("This server %d has been killed", kv.me)
 					reply.Err = ErrServerKilled
 					return
 				} 
 
 				term, isLeader = kv.rf.GetState()
 				if !isLeader {
+					//log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 					kv.tryDeleteRequestQueue()
 					reply.Err = ErrWrongLeader
 					reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm() 
 					return
 				} else {
-					cachedReply, okCached = kv.processedReplied[serial_number]
+					cachedReply, okCached = kv.processedReplies[serial_number]
 					if okCached {
 						reply.Err = cachedReply.Err
 						reply.Value = cachedReply.Value
 	
 						reply.CurrentLeaderId = kv.me
 						reply.CurrentLeaderTerm = term
+						//log.Printf("This server %d has cached result for Get request with key %s and serial number %d ", kv.me, key, serial_number)
 						return
-					} 
+					} else {
+						//log.Printf("This server %d does not have cached result for Get request with key %s and serial number %d, so we wait", kv.me, key, serial_number)
+					}
 				}
 				kv.mu.Unlock()
 				time.Sleep(time.Duration(kvserver_loop_wait_time_millisecond) * time.Millisecond)
@@ -168,16 +181,27 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+	key := args.Key
+	value := args.Value
+	op := args.Op
+	serial_number := args.Serial_Number
+
+	//log.Printf("This server %d has received %s request with key %s, value %s, and serial number %d", kv.me, args.Op, key, value, serial_number)
+
 	if kv.killed() {
 		reply.Err = ErrServerKilled
+		//log.Printf("This server %d has been killed", kv.me)
 		return
 	} 
 
 	for i := 0; i < len(args.PrevRequests); i++ {
 		serialNumberProbe := args.PrevRequests[i]
-		_, okCachedProbe := kv.processedReplied[serialNumberProbe]
+		//cachedResult, okCachedProbe := kv.processedReplies[serialNumberProbe]
+		_, okCachedProbe := kv.processedReplies[serialNumberProbe]
 		if okCachedProbe {
-			delete(kv.processedReplied, serialNumberProbe)
+			//log.Printf("This server %d is removing cached result for request with serial number %d, cached value is %s", kv.me, serialNumberProbe, cachedResult.Value)
+			delete(kv.processedReplies, serialNumberProbe)
+			kv.deletedReplies[serialNumberProbe] = true
 		}
 	}
 	// removed reply to previous rpc already finished
@@ -185,19 +209,16 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	term, isLeader := kv.rf.GetState()
 	
 	if !isLeader {
+		//log.Printf("This server %d has received %s request with key %s, value %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, args.Op, key, value, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 		kv.tryDeleteRequestQueue()
 		reply.Err = ErrWrongLeader
 		reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm()
 		return
 	} else {
 		kv.tryInitRequestQueue()
-		key := args.Key
-		value := args.Value
-		op := args.Op
-		serial_number := args.Serial_Number
-
-		cachedReply, okCached := kv.processedReplied[serial_number]
+		cachedReply, okCached := kv.processedReplies[serial_number]
 		if okCached {
+			//log.Printf("This server %d has cached result for %s request with key %s, value %s and serial number %d ", kv.me, args.Op, key, value, serial_number)
 			reply.Err = cachedReply.Err
 			return
 		} else {
@@ -211,11 +232,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				opToRaft.Serial_Number = serial_number
 				_, _, isLeader := kv.rf.Start(opToRaft)
 				if !isLeader {
+					//log.Printf("This server %d has received %s request with key %s, value %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, args.Op, key, value, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 					kv.tryDeleteRequestQueue()
 					reply.Err = ErrWrongLeader
 					reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm()
 					return
 				} else {
+					//log.Printf("This server %d does not have cached result for %s request with key %s, value %s, and serial number %d but is not leader, now enqueue", kv.me, args.Op, key, value, serial_number)
 					kv.processQueue[serial_number] = true
 					kv.mu.Unlock()
 				}
@@ -226,25 +249,28 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 				if kv.killed(){
 					reply.Err = ErrServerKilled
+					//log.Printf("This server %d has been killed", kv.me)
 					return
 				}
 
 				term, isLeader = kv.rf.GetState()
 				if !isLeader {
+					//log.Printf("This server %d has received %s request with key %s, value %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, args.Op, key, value, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 					kv.tryDeleteRequestQueue()
-
 					reply.Err = ErrWrongLeader
 					reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm()
 					return
 				} else {
-					cachedReply, okCached = kv.processedReplied[serial_number]
+					cachedReply, okCached = kv.processedReplies[serial_number]
 					if okCached {
+						//log.Printf("This server %d has cached result for %s request with key %s, value %s and serial number %d ", kv.me, args.Op, key, value, serial_number)
 						reply.Err = cachedReply.Err
-	
 						reply.CurrentLeaderId = kv.me
 						reply.CurrentLeaderTerm = term
 						return
-					} 
+					} else {
+						//log.Printf("This server %d does not have cached result for %s request with key %s, value %sand serial number %d, so we wait", kv.me, args.Op, key, value, serial_number)
+					}
 				}
 				kv.mu.Unlock()
 				time.Sleep(time.Duration(kvserver_loop_wait_time_millisecond) * time.Millisecond)
@@ -284,8 +310,12 @@ func (kv *KVServer) handleRequest(applyMessage raft.ApplyMsg) {
 	op := operation.Operation
 	serial_number := operation.Serial_Number
 
-	_, ok := kv.processedReplied[serial_number]
-	if ok {
+	_, okProcessed := kv.processedReplies[serial_number]
+	_, okDeleted := kv.deletedReplies[serial_number]
+	if okProcessed || okDeleted {
+		
+		//log.Printf("This server %d already executed this action for %s request with key %s, value %s and serial number %d, so no need to dulicate execution", kv.me, op, key, value, serial_number)
+		
 		// it is possible that this server has received the request from heart beat in previous term
 		// but has not commited, then before commit, this leader receives duplicate request from
 		// client, which will also be added to queue since the request is not commited and is not 
@@ -300,27 +330,34 @@ func (kv *KVServer) handleRequest(applyMessage raft.ApplyMsg) {
 	if op == "Get" {
 		dbvalue, ok:= kv.db[key]
 		if ok {
+			//log.Printf("This server %d is caching result for Get request with key %s and serial number %d, cached value is %s", kv.me, key, serial_number, dbvalue)
 			replyToStore.Err = OK
 			replyToStore.Value = dbvalue
 		} else {
+			//log.Printf("This server %d is caching result for Get request with key %s and serial number %d, there is no key so return ErrNoKey", kv.me, key, serial_number)
 			replyToStore.Err = ErrNoKey
 		}
 	} else if (op == "Put") {
+		//log.Printf("This server %d is caching result for Put request with key %s and serial number %d, cached value is %s", kv.me, key, serial_number, value)
 		kv.db[key] = value
 		replyToStore.Err = OK
 	} else {
+		
 		dbvalue, ok:= kv.db[key]
 		if ok {
 			kv.db[key] = dbvalue + value
+			//log.Printf("This server %d is caching result for Append request with key %s and serial number %d, cached value is %s", kv.me, key, serial_number, dbvalue + value)
 		} else {
 			kv.db[key] =  value
+			//log.Printf("This server %d is caching result for Append request with key %s and serial number %d, cached value is %s", kv.me, key, serial_number, value)
 		}
 		replyToStore.Err = OK
 	}
-	kv.processedReplied[serial_number] = &replyToStore // cache the response in case of handling retry
+	kv.processedReplies[serial_number] = &replyToStore // cache the response in case of handling retry
 	if kv.processQueue != nil {
 		_, ok := kv.processQueue[serial_number]
 		if ok {
+			//log.Printf("This server %d is removing request with serial number %d", kv.me, serial_number)
 			delete(kv.processQueue, serial_number) // remove request from processQueue if this server is a leader that handles the request process
 		}
 	}
@@ -360,7 +397,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-	kv.processedReplied = make(map[int64]*StoredReply)
+	kv.processedReplies = make(map[int64]*StoredReply)
+	kv.deletedReplies = make(map[int64]bool)
 	kv.processQueue = nil
 
 	kv.db = make(map[string]string)
