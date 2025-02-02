@@ -85,7 +85,7 @@ func (ck *Clerk) Get(key string) string {
 		if ok {
 			error := reply.Err
 			if (error == OK) {
-				//log.Printf("Get request with key %s and serial number %d is successful", key, args.Serial_Number)
+				//log.Printf("Get request with key %s and serial number %d is successful, get %s", key, args.Serial_Number, reply.Value)
 				ck.prevRequests = append(ck.prevRequests, args.Serial_Number)
 				return reply.Value
 			} else if (error == ErrNoKey) {
