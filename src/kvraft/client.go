@@ -70,7 +70,7 @@ func (ck *Clerk) Get(key string) string {
 		args.PrevRequests = append(args.PrevRequests, ck.prevRequests[i])
 	}
 
-	//log.printf("initiate Get request with key %s and serial number %d", op, key, args.Serial_Number)
+	//log.Printf("initiate Get request with key %s and serial number %d", key, args.Serial_Number)
 
 	reply := GetReply{}
 
@@ -85,24 +85,34 @@ func (ck *Clerk) Get(key string) string {
 		if ok {
 			error := reply.Err
 			if (error == OK) {
-				//log.printf("Get request with key %s and serial number %d is successful", op, key, args.Serial_Number)
+				//log.Printf("Get request with key %s and serial number %d is successful", key, args.Serial_Number)
 				ck.prevRequests = append(ck.prevRequests, args.Serial_Number)
 				return reply.Value
 			} else if (error == ErrNoKey) {
-				//log.printf("No key, Get request with key %s and serial number %d has failed", op, key, args.Serial_Number)
+				//log.Printf("No key, Get request with key %s and serial number %d has failed", key, args.Serial_Number)
 				return empty_string
 			} else if (error == ErrServerKilled) {
-				//log.printf("server with id %d of term %d has been killed, Get request with key %s and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, key, args.Serial_Number)
+				//log.Printf("server with id %d of term %d has been killed, Get request with key %s and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, key, args.Serial_Number)
 				ck.currentLeaderId = invalid_leader
 			} else {
-				//log.printf("server with id %d of term %d has been lost leadership/or is not leader, Get request with key %s and serial number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId,  ck.currentLeaderTerm, key, args.Serial_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
-				if (reply.CurrentLeaderTerm >= ck.currentLeaderTerm) {
+				
+				if (reply.CurrentLeaderTerm > ck.currentLeaderTerm) {
 					ck.currentLeaderId = reply.CurrentLeaderId
 					ck.currentLeaderTerm = reply.CurrentLeaderTerm
+					//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, Get request with key %s and serial number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId,  ck.currentLeaderTerm, key, args.Serial_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+				} else if (reply.CurrentLeaderTerm == ck.currentLeaderTerm){
+					if (reply.CurrentLeaderId == ck.currentLeaderId) {
+						ck.currentLeaderId = invalid_leader
+						//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, Get request with key %s and serial number %d is unsuccessful, leader did not realize lose of leadership, retry with random server",leaderId,  ck.currentLeaderTerm, key, args.Serial_Number)
+					} else {
+						ck.currentLeaderId = reply.CurrentLeaderId
+					}
+				} else {
+					ck.currentLeaderId = invalid_leader
 				}
 			}
 		} else {
-			//log.printf("did not receive reply from server with id %d of term %d, Get request with key %s and serial number %d is unsuccessful possibily due to network partitiob, retry with same server",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number)
+			//log.Printf("did not receive reply from server with id %d of term %d, Get request with key %s and serial number %d is unsuccessful possibily due to network partitiob, retry with same server",leaderId,  ck.currentLeaderTerm, key, args.Serial_Number)
 			ck.currentLeaderId = ck.randServer()
 		}
 	}
@@ -135,7 +145,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		args.PrevRequests = append(args.PrevRequests, ck.prevRequests[i])
 	}
 
-	//log.printf("initiate %s request with (key %s, value %s) and serial number %d", op, key, value, args.Serial_Number)
+	//log.Printf("initiate %s request with (key %s, value %s) and serial number %d", op, key, value, args.Serial_Number)
 
 	reply := PutAppendReply{}
 
@@ -150,21 +160,30 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if ok {
 			error := reply.Err
 			if (error == OK) {
-				//log.printf("%s request with (key %s, value %s) and serial number %d is successful", op, key, value, args.Serial_Number)
+				//log.Printf("%s request with (key %s, value %s) and serial number %d is successful", op, key, value, args.Serial_Number)
 				ck.prevRequests = append(ck.prevRequests, args.Serial_Number)
 				return 
 			} else if (error == ErrServerKilled) {
-				//log.printf("server with id %d of term %d has been killed, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number)
+				//log.Printf("server with id %d of term %d has been killed, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number)
 				ck.currentLeaderId = invalid_leader
 			} else {
-				if (reply.CurrentLeaderTerm >= ck.currentLeaderTerm) {
-					//log.printf("server with id %d of term %d has been lost leadership/or not a leader, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+				if (reply.CurrentLeaderTerm > ck.currentLeaderTerm) {
+					//log.Printf("server with id %d of term %d has been lost leadership/or not a leader, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 					ck.currentLeaderId = reply.CurrentLeaderId
 					ck.currentLeaderTerm = reply.CurrentLeaderTerm
+				} else if (reply.CurrentLeaderTerm == ck.currentLeaderTerm){
+					if (reply.CurrentLeaderId == ck.currentLeaderId) {
+						ck.currentLeaderId = invalid_leader
+						//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, Get request with key %s and serial number %d is unsuccessful, leader did not realize lose of leadership, retry with random server",leaderId,  ck.currentLeaderTerm, key, args.Serial_Number)
+					} else {
+						ck.currentLeaderId = reply.CurrentLeaderId
+					}
+				} else {
+					ck.currentLeaderId = invalid_leader
 				}
 			}
 		} else {
-			//log.printf("did not receive reply from server with id %d of term %d, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number)
+			//log.Printf("did not receive reply from server with id %d of term %d, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number)
 			ck.currentLeaderId = ck.randServer()
 		}
 	}

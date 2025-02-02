@@ -604,6 +604,7 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 			if (replyTerm > term) {
 				//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", leaderId, term, replyTerm, serverIndex)
 				defer rf.mu.Unlock()
+				rf.currentLeaderId = invalid_leader
 				return replyTerm, invalid_index, false
 			} else {
 				if !replySuccess {
@@ -725,6 +726,7 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 		replySuccess := reply.Success
 		if (replyTerm > term) {
 			//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", leaderId, term, replyTerm, serverIndex)
+			rf.currentLeaderId = invalid_leader
 			return replyTerm, false, false
 		} else {
 			if !replySuccess {
@@ -1022,6 +1024,7 @@ func (rf *Raft) actAsLeader() {
 								rf.currentTerm = reply.Term
 								rf.role = follower_role
 								rf.votedFor = not_voted
+								rf.currentLeaderId = invalid_leader
 								rf.persist()
 								//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", rf.me, leaderTerm, reply.Term, serverIndex)
 							} else {
@@ -1040,6 +1043,7 @@ func (rf *Raft) actAsLeader() {
 						if !isLeader {
 							rf.currentTerm = int(math.Max(float64(serverTerm), float64(rf.currentTerm)))
 							rf.role = follower_role
+						
 							rf.persist()
 							//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode of term %d", rf.me, leaderTerm, rf.currentTerm)
 						} else if rf.killed() {
@@ -1057,6 +1061,7 @@ func (rf *Raft) actAsLeader() {
 							if !isLeader {
 								rf.currentTerm = int(math.Max(float64(serverTerm), float64(rf.currentTerm)))
 								rf.role = follower_role
+				
 								rf.persist()
 								//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode", rf.me, leaderTerm)
 							} else if rf.killed(){
@@ -1209,6 +1214,7 @@ func (rf *Raft) actAsCandidate() {
 					if reply.Term > termThisServer {
 						rf.currentTerm = reply.Term
 						rf.role = follower_role
+
 						//log.Printf("this server %d as candidate (term %d) received higher term %d from server %d, switch to follower mode", rf.me, termThisServer, reply.Term, serverIndex)
 					} else {
 						if reply.VoteGranted {
