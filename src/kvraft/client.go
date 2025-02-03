@@ -65,10 +65,7 @@ func (ck *Clerk) Get(key string) string {
 
 	args.Key = key
 	args.Serial_Number = nrand()
-	args.PrevRequests = make([]int64, 0)
-	for i := 0; i < len(ck.prevRequests); i++ {
-		args.PrevRequests = append(args.PrevRequests, ck.prevRequests[i])
-	}
+	
 
 	//log.Printf("initiate Get request with key %s and serial number %d", key, args.Serial_Number)
 
@@ -87,6 +84,37 @@ func (ck *Clerk) Get(key string) string {
 			if (error == OK) {
 				//log.Printf("Get request with key %s and serial number %d is successful, get %s", key, args.Serial_Number, reply.Value)
 				ck.prevRequests = append(ck.prevRequests, args.Serial_Number)
+
+				for i := 0; i < ck.numberOfServers; i++ {
+					prevRequestsToSend := make([]int64, 0)
+
+					serialNumberToSend := args.Serial_Number
+					for j := 0; j < len(ck.prevRequests); j++ {
+						prevRequestsToSend = append(prevRequestsToSend, ck.prevRequests[j])
+					}		
+
+					go func(prevRequestsToSend []int64, serialNumberToSend int64, serverIndex int) {
+						args := DeletePrevRequestArgs{}
+						args.PrevRequests = prevRequestsToSend 
+
+						reply := DeletePrevRequestReply{}
+
+						okDeleted := ck.servers[serverIndex].Call("KVServer.DeletePrevRequest", &args, &reply)
+
+						if okDeleted {
+							if reply.Err == OK {
+								//log.Printf("Deleterequest RPC for requests preceeding serial number %d on server %d is successful", serialNumberToSend, serverIndex)
+							} else {
+								//log.Printf("server %d has been killed, fail to delete requests preceeding serial number %d ", serverIndex, serialNumberToSend)
+							} 
+						} else {
+							//log.Printf("delete to server %d for requests preceeding serial number %d has failed possibily due to network partition", serverIndex)
+						}
+
+						return
+					}(prevRequestsToSend, serialNumberToSend, i)
+				}
+				
 				return reply.Value
 			} else if (error == ErrNoKey) {
 				//log.Printf("No key, Get request with key %s and serial number %d has failed", key, args.Serial_Number)
@@ -140,10 +168,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Op = op
 
 	args.Serial_Number = nrand()
-	args.PrevRequests = make([]int64, 0)
+
+	/*args.PrevRequests = make([]int64, 0)
 	for i := 0; i < len(ck.prevRequests); i++ {
 		args.PrevRequests = append(args.PrevRequests, ck.prevRequests[i])
-	}
+	}*/
 
 	//log.Printf("initiate %s request with (key %s, value %s) and serial number %d", op, key, value, args.Serial_Number)
 
@@ -162,6 +191,36 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			if (error == OK) {
 				//log.Printf("%s request with (key %s, value %s) and serial number %d is successful", op, key, value, args.Serial_Number)
 				ck.prevRequests = append(ck.prevRequests, args.Serial_Number)
+
+				for i := 0; i < ck.numberOfServers; i++ {
+					prevRequestsToSend := make([]int64, 0)
+
+					serialNumberToSend := args.Serial_Number
+					for j := 0; j < len(ck.prevRequests); j++ {
+						prevRequestsToSend = append(prevRequestsToSend, ck.prevRequests[j])
+					}		
+
+					go func(prevRequestsToSend []int64, serialNumberToSend int64, serverIndex int) {
+						args := DeletePrevRequestArgs{}
+						args.PrevRequests = prevRequestsToSend 
+
+						reply := DeletePrevRequestReply{}
+
+						okDeleted := ck.servers[leaderId].Call("KVServer.DeletePrevRequest", &args, &reply)
+						if okDeleted {
+							if reply.Err == OK {
+								//log.Printf("Deleterequest RPC for requests preceeding serial number %d on server %d is successful", serialNumberToSend, serverIndex)
+							} else {
+								//log.Printf("server %d has been killed, fail to delete requests preceeding serial number %d ", serverIndex, serialNumberToSend)
+							} 
+						} else {
+							//log.Printf("delete to server %d for requests preceeding serial number %d has failed possibily due to network partition", serverIndex)
+						}
+						
+
+					}(prevRequestsToSend, serialNumberToSend, i)
+				}
+
 				return 
 			} else if (error == ErrServerKilled) {
 				//log.Printf("server with id %d of term %d has been killed, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number)
