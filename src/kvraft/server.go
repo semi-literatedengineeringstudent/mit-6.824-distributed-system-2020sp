@@ -69,14 +69,9 @@ func (kv *KVServer) tryDeleteRequestQueue() {
 	return
 }
 
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+func (kv *KVServer) DeletePrevRequest(args *DeletePrevRequestArgs, reply *DeletePrevRequestReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	key := args.Key
-	serial_number := args.Serial_Number
-
-	//log.Printf("This server %d has received Get request with key %s and serial number %d", kv.me, key, serial_number)
 
 	if kv.killed() {
 		reply.Err = ErrServerKilled
@@ -94,6 +89,26 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			kv.deletedReplies[serialNumberProbe] = true
 		}
 	}
+	reply.Err = OK
+
+	return
+}
+
+func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	key := args.Key
+	serial_number := args.Serial_Number
+
+	//log.Printf("This server %d has received Get request with key %s and serial number %d", kv.me, key, serial_number)
+
+	if kv.killed() {
+		reply.Err = ErrServerKilled
+		//log.Printf("This server %d has been killed", kv.me)
+		return
+	} 
+
 	// removed reply to previous rpc already finished
 
 	term, isLeader := kv.rf.GetState()
@@ -194,16 +209,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	} 
 
-	for i := 0; i < len(args.PrevRequests); i++ {
-		serialNumberProbe := args.PrevRequests[i]
-		//cachedResult, okCachedProbe := kv.processedReplies[serialNumberProbe]
-		_, okCachedProbe := kv.processedReplies[serialNumberProbe]
-		if okCachedProbe {
-			//log.Printf("This server %d is removing cached result for request with serial number %d, cached value is %s", kv.me, serialNumberProbe, cachedResult.Value)
-			delete(kv.processedReplies, serialNumberProbe)
-			kv.deletedReplies[serialNumberProbe] = true
-		}
-	}
 	// removed reply to previous rpc already finished
 
 	term, isLeader := kv.rf.GetState()

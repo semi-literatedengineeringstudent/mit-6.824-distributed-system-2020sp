@@ -11,6 +11,13 @@ const (
 
 type Err string
 
+type DeletePrevRequestArgs struct {
+	PrevRequests []int64
+}
+type DeletePrevRequestReply struct {
+	Err Err
+}
+
 // Put or Append
 type PutAppendArgs struct {
 	Key   string
@@ -22,7 +29,7 @@ type PutAppendArgs struct {
 
 	Serial_Number int64
 
-	PrevRequests []int64
+	//PrevRequests []int64
 }
 
 type PutAppendReply struct {
@@ -38,7 +45,7 @@ type GetArgs struct {
 
 	Serial_Number int64
 
-	PrevRequests []int64
+	//PrevRequests []int64
 }
 
 type GetReply struct {
