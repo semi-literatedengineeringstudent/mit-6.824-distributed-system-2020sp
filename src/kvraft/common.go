@@ -6,7 +6,6 @@ const (
 	ErrWrongLeader = "ErrWrongLeader"
 
 	ErrServerKilled  = "ErrServerKilled"
-
 )
 
 type Err string
@@ -28,8 +27,6 @@ type PutAppendArgs struct {
 	// otherwise RPC will break.
 
 	Serial_Number int64
-
-	//PrevRequests []int64
 }
 
 type PutAppendReply struct {
@@ -44,8 +41,6 @@ type GetArgs struct {
 	// You'll have to add definitions here.
 
 	Serial_Number int64
-
-	//PrevRequests []int64
 }
 
 type GetReply struct {
