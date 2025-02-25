@@ -16,4 +16,8 @@ var invalid_term int = 0
 
 var invalid_leader int = -1
 
+var leader_role int = 0
+var candidate_role int = 1
+var follower_role int = 2
+
 

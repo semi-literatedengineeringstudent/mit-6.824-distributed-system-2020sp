@@ -147,6 +147,21 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
+func (rf *Raft) GetStateWTF() (int, bool, int, int) {
+
+	var term int
+	var isleader bool
+	var currentLeaderId int
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term = rf.currentTerm
+	if rf.role == leader_role {
+		isleader = true
+	} 
+	currentLeaderId = rf.currentLeaderId
+	return term, isleader, currentLeaderId, rf.role
+}
+
 func (rf *Raft) GetRaftStateSize() int {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -242,7 +257,6 @@ func (rf *Raft) readPersistState(state []byte) error {
 		//save the persistent state
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
-		//rf.logs = logs
 		rf.logStartIndex = logStartIndex
 		rf.logEndIndex = logEndIndex
 		rf.current_sentinel_index = current_sentinel_index
@@ -489,6 +503,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				// but I don't think this extra check is necessary since
 				// leader will never modify the logs it already has during its tenure
 
+				/*if (args.EntriesEnd < rf.logStartIndex) {
+					// meaning the log has been trimed and snap shot is updated so the append is no longer necessary
+				}*/
 				for j := args.EntriesStart; j <= args.EntriesEnd; j++ {
 					logToAppend := LogEntry{}
 					logToAppend.Term = args.Entries[j].Term
@@ -755,6 +772,7 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 			if (replyTerm > term) {
 				//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", leaderId, term, replyTerm, serverIndex)
 				defer rf.mu.Unlock()
+				rf.role = follower_role
 				rf.currentLeaderId = reply.CurrentLeaderId
 				return replyTerm, invalid_index, false
 			} else {
@@ -767,7 +785,9 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 					//log.Printf("this server %d as leader (term %d) fail to replicate log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, initiate retry with decrement", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 					
 					if (reply.NeedSnapShot) {
+						rf.mu.Unlock()
 						rf.sendInstallSnapshotSingleServer(serverIndex)
+						rf.mu.Lock()
 						//log.Printf("this server %d as leader (term %d) fail to replicate log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, snapshot incongruency, try to install snapshot and retry", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 					} else if reply.XTerm == invalid_term {
 						// case 3, the follower simply does not have any entry at prevLogIndex
@@ -858,8 +878,15 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 
 	for i := args.EntriesStart; i <= args.EntriesEnd; i++ {
 		entryToAppend := LogEntry{}
-		entryToAppend.Term = rf.logs[i].Term
-		entryToAppend.Command = rf.logs[i].Command
+
+		entryToRetrive, ok := rf.logs[i] 
+		if !ok {
+			// meaning leader has trimed log and send snapshot to sync logs
+
+			return rf.currentTerm, false, true
+		}
+		entryToAppend.Term = entryToRetrive.Term
+		entryToAppend.Command = entryToRetrive.Command
 		args.Entries[i] = &entryToAppend
 	}
 	
@@ -891,6 +918,7 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 			if (replyTerm > term) {
 				//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", leaderId, term, replyTerm, serverIndex)
 				rf.currentLeaderId = reply.CurrentLeaderId
+				rf.role = follower_role
 				return replyTerm, false, false
 			} else {
 				if !replySuccess {
@@ -900,9 +928,9 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 							delete(args.Entries[i], i)
 						} 
 						args.EntriesStart = rf.startIndex*/
-						
-						rf.sendInstallSnapshotSingleServer(serverIndex)
 						rf.mu.Unlock()
+						rf.sendInstallSnapshotSingleServer(serverIndex)
+						rf.mu.Lock()
 						//log.Printf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d due to snapshot incongruency, try install snapshot then retry", leaderId, term, serverIndex, entriesStart, entriesEnd)
 					} else {
 						//log.Printf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d, and I have no idea what the bloody hell just happened", leaderId, term, serverIndex, entriesStart, entriesEnd)
@@ -913,10 +941,10 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 					// " If successful: update nextIndex and matchIndex for
 					// follower (�5.3)
 			
-					//rf.nextIndex[serverIndex] = int(math.Max(float64(rf.nextIndex[serverIndex]), float64(entriesEnd + 1)))
-					rf.nextIndex[serverIndex] = entriesEnd + 1
-					//rf.matchIndex[serverIndex] = int(math.Max(float64(rf.matchIndex[serverIndex]), float64(entriesEnd)))
-					rf.matchIndex[serverIndex] = entriesEnd
+					rf.nextIndex[serverIndex] = int(math.Max(float64(rf.nextIndex[serverIndex]), float64(entriesEnd + 1)))
+					//rf.nextIndex[serverIndex] = entriesEnd + 1
+					rf.matchIndex[serverIndex] = int(math.Max(float64(rf.matchIndex[serverIndex]), float64(entriesEnd)))
+					//rf.matchIndex[serverIndex] = entriesEnd
 					//log.Printf("this server %d as leader (term %d) successfully appends log to follower %d from entriesStart %d to entriesEnd %d", leaderId, term, serverIndex, entriesStart, entriesEnd)
 					go rf.updateCommitIndex()
 
@@ -956,7 +984,7 @@ func (rf *Raft) updateCommitIndex() {
 
 	//(2)
 	for j := rf.quorum - 1; j < numberOfPeers; j++ {
-		if matchIndexList[j] > rf.commitIndex && rf.logs[matchIndexList[j]].Term == rf.currentTerm {
+		if matchIndexList[j] > rf.commitIndex && matchIndexList[j] >= rf.logStartIndex && rf.logs[matchIndexList[j]].Term == rf.currentTerm {
 			// (1) and (3)
 			rf.commitIndex = matchIndexList[j]
 			//log.Printf("this serf.persister.RaftStateSize() rver %d as leader (term %d) successfully commited entry at index %d", rf.me, rf.currentTerm, rf.commitIndex)
@@ -1029,12 +1057,13 @@ func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int,
 			rf.nextIndex[serverIndex] = int(math.Max(float64(rf.nextIndex[serverIndex]), float64(LastIncludedIndex + 1)))
 			rf.matchIndex[serverIndex] = int(math.Max(float64(rf.matchIndex[serverIndex]), float64(LastIncludedIndex)))
 			//log.Printf("this leader server %d of Term %d now send snapshot to server %d", rf.me, rf.currentTerm, serverIndex)
-			rf.sendInstallSnapshotSingleServer(serverIndex)
+			go rf.sendInstallSnapshotSingleServer(serverIndex)
 		}
 	}
 }
 
 func (rf *Raft) sendInstallSnapshotSingleServer(serverIndex int) {
+	rf.mu.Lock()
 	args := InstallSnapshotArgs{}
 
 	args.Term = rf.currentTerm
@@ -1046,8 +1075,34 @@ func (rf *Raft) sendInstallSnapshotSingleServer(serverIndex int) {
 	args.SnapShotByte = rf.SnapShotByte
 
 	reply := InstallSnapshotReply{}
+	rf.mu.Unlock()
+	receivedReply := rf.sendInstallSnapshot(serverIndex, &args, &reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	
-	go func(serverIndex int, args *InstallSnapshotArgs, reply *InstallSnapshotReply, rf *Raft) {
+	if rf.killed() {
+		//log.Printf("this server %d of Term %d has been killed", rf.me, rf.currentTerm)
+		return
+	} else if rf.role != leader_role {
+		//log.Printf("this server %d of Term %d is no longer a leader", rf.me, rf.currentTerm)
+		return
+	} else if receivedReply {
+		replyTerm := reply.Term
+		if replyTerm  > rf.currentTerm {
+			//log.Printf("this server %d of Term %d is no longer a leader, swtich to follower role with currentLeaderTerm %d and currentLeaderId %d", rf.me, rf.currentTerm, reply.Term, reply.CurrentLeaderId)
+			rf.currentTerm = reply.Term
+			rf.role = follower_role
+			rf.currentLeaderId = reply.CurrentLeaderId
+			return
+		} else {
+			//log.Printf("this server %d of Term %d has successfully installed snapshot on server %d", rf.me, rf.currentTerm, serverIndex)
+		}
+
+	} else {
+		//log.Printf("this server %d of Term %d did not receive reply from installSnapshot RPC on server %d", rf.me, rf.currentTerm, serverIndex)
+	}
+	
+	/*go func(serverIndex int, args *InstallSnapshotArgs, reply *InstallSnapshotReply, rf *Raft) {
 		receivedReply := rf.sendInstallSnapshot(serverIndex, args, reply)
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
@@ -1073,7 +1128,7 @@ func (rf *Raft) sendInstallSnapshotSingleServer(serverIndex int) {
 		} else {
 			//log.Printf("this server %d of Term %d did not receive reply from installSnapshot RPC on server %d", rf.me, rf.currentTerm, serverIndex)
 		}
-	}(serverIndex, &args, &reply, rf)
+	}(serverIndex, &args, &reply, rf)*/
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
@@ -1216,6 +1271,15 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 	return ok
 }
 
+func (rf *Raft) SendSnapShotToKvServer() (int, int, []byte){
+	rf.mu.Lock()
+
+	defer rf.mu.Unlock()
+
+	return rf.LastIncludedIndex, rf.LastIncludedTerm, rf.SnapShotByte
+
+	
+}
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -1331,8 +1395,11 @@ func (rf *Raft) syncCommitIndexAndLastApplied() {
 		//log.Printf("lastApplied is %d", rf.lastApplied)
 		//log.Printf("commitIndex is %d", rf.commitIndex)
 		//log.Printf("logEnd is %d", rf.logEndIndex)
-		applyStart := rf.lastApplied + 1
+
+		//applyStart := rf.lastApplied + 1
+		applyStart := int(math.Max(float64(rf.lastApplied + 1), float64(rf.logStartIndex)))
 		applyEnd := rf.commitIndex
+
 		for i := applyStart; i <= applyEnd; i++ {
 			applyMsg := ApplyMsg{}
 			applyMsg.CommandValid = true
@@ -1423,7 +1490,7 @@ func (rf *Raft) actAsLeader() {
 				prevLogIndex := rf.current_sentinel_index
 				prevLogTerm := default_start_term
 				//log.Printf("the server %d as leader of term %d has been sentinel_index %d, logStartIndex %d, and logEndIndex %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex)
-				if serverNextIndex - 1 != rf.current_sentinel_index {
+				if serverNextIndex - 1 > rf.current_sentinel_index {
 					prevLogIndex = serverNextIndex - 1
 					prevLogTerm = (rf.logs[serverNextIndex - 1]).Term
 				}
@@ -1472,7 +1539,9 @@ func (rf *Raft) actAsLeader() {
 							} else {
 								if (reply.NeedSnapShot) {
 									//log.Printf("need to send snapshot to server %d", serverIndex)
+									rf.mu.Unlock()
 									rf.sendInstallSnapshotSingleServer(serverIndex)
+									rf.mu.Lock()
 								}
 								//log.Printf("this server %d as leader (term %d) received heart beat reply from server %d and remain a leader", rf.me, leaderTerm, serverIndex)
 							}	
@@ -1577,6 +1646,7 @@ func (rf *Raft) actAsFollower() {
 			defer rf.mu.Unlock()	
 			//log.Printf("the server %d as follower in term %d has not heard heart beat from leader after election timeout expire, switch to candidate role", rf.me, rf.currentTerm)
 			rf.role = candidate_role
+			rf.currentLeaderId = invalid_leader
 			rf.persist()
 			return
 		}
@@ -1693,6 +1763,8 @@ func (rf *Raft) actAsCandidate() {
 		if currentTime.After(timeToCheck) {
 			//log.Printf("this server %d as candidate did not get reply from all servers during election timeout, restart election", rf.me)
 			rf.role = candidate_role
+			rf.currentLeaderId = invalid_leader
+			rf.persist()
 			return
 		}
 
@@ -1764,8 +1836,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		
 	}
 
-	rf.persist()
-
 	rf.LastIncludedIndex = default_sentinel_index
 	rf.LastIncludedTerm = default_start_term 
 	
@@ -1785,6 +1855,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.killedMessagePrinted = 0;
 
 	rf.applyChRaft = applyCh
+
+	rf.persist()
 
 	go func(rf *Raft){
 		go rf.syncCommitIndexAndLastApplied()
@@ -1838,18 +1910,7 @@ func MakeWithSnapshot(peers []*labrpc.ClientEnd, me int,
 		rf.maxraftstate = maxraftstate
 		
 	}
-	if rf.maxraftstate != -1 {
-		if rf.readPersistSnapshot(persister.ReadSnapshot()) != nil {
-			// save state machine snapshot
-			rf.LastIncludedIndex = default_sentinel_index
-			rf.LastIncludedTerm = default_start_term 
-			
-			rf.SnapShotByte = make([]byte, 0)
-		}
-	}
 
-
-	rf.persist()
 
 	//rf.current_sentinel_index = int(math.Max(float64(default_sentinel_index), float64(rf.logStartIndex - 1)))
 	
@@ -1869,6 +1930,17 @@ func MakeWithSnapshot(peers []*labrpc.ClientEnd, me int,
 	rf.killedMessagePrinted = 0;
 
 	rf.applyChRaft = applyCh
+
+	if rf.maxraftstate != -1 {
+		if rf.readPersistSnapshot(persister.ReadSnapshot()) != nil {
+			// save state machine snapshot
+			rf.LastIncludedIndex = default_sentinel_index
+			rf.LastIncludedTerm = default_start_term 
+			
+			rf.SnapShotByte = make([]byte, 0)
+		}
+	}
+	rf.persist()
 
 	go func(rf *Raft){
 		go rf.syncCommitIndexAndLastApplied()

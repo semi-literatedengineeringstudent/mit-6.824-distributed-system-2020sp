@@ -35,6 +35,8 @@ type PutAppendReply struct {
 
 	CurrentLeaderId int
 	CurrentLeaderTerm int
+
+	ServerRole int
 }
 
 type GetArgs struct {
@@ -51,4 +53,6 @@ type GetReply struct {
 
 	CurrentLeaderId int
 	CurrentLeaderTerm int
+
+	ServerRole int
 }

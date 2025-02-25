@@ -166,12 +166,14 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// removed reply to previous rpc already finished
 
-	term, isLeader := kv.rf.GetState()
+	term, isLeader, currentLeaderId, serverRole := kv.rf.GetStateWTF()
 
 	if !isLeader {
 		//log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 		reply.Err = ErrWrongLeader
-		reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm() 
+		reply.CurrentLeaderId = currentLeaderId
+		reply.CurrentLeaderTerm = term
+		reply.ServerRole = serverRole
 		return
 	} else {
 
@@ -231,12 +233,14 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 					return
 				} 
 
-				term, isLeader = kv.rf.GetState()
+				term, isLeader, currentLeaderId, serverRole = kv.rf.GetStateWTF()
 				if !isLeader {
 					//log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 				
 					reply.Err = ErrWrongLeader
-					reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm() 
+					reply.CurrentLeaderId = currentLeaderId
+					reply.CurrentLeaderTerm = term
+					reply.ServerRole = serverRole
 					return
 				} else {
 					Client_Received_Sequence_Number = client_Info_This.Received_Sequence_Number
@@ -327,12 +331,14 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	// removed reply to previous rpc already finished
 
-	term, isLeader := kv.rf.GetState()
+	term, isLeader, currentLeaderId, serverRole := kv.rf.GetStateWTF()
 
 	if !isLeader {
 		//log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 		reply.Err = ErrWrongLeader
-		reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm() 
+		reply.CurrentLeaderId = currentLeaderId
+		reply.CurrentLeaderTerm = term
+		reply.ServerRole = serverRole
 		return
 	} else {
 		Client_Received_Sequence_Number := client_Info_This.Received_Sequence_Number
@@ -351,7 +357,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			reply.CurrentLeaderId = kv.me
 			reply.CurrentLeaderTerm = term
 
-			log.Printf("This server %d has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, key, client_Serial_Number, sequence_Number)
+			//log.Printf("This server %d has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, key, client_Serial_Number, sequence_Number)
 			
 			return
 		} else {
@@ -391,12 +397,14 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 					return
 				} 
 
-				term, isLeader = kv.rf.GetState()
+				term, isLeader, currentLeaderId, serverRole = kv.rf.GetStateWTF()
 				if !isLeader {
 					//log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, serial_number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 		
 					reply.Err = ErrWrongLeader
-					reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm() 
+					reply.CurrentLeaderId = currentLeaderId
+					reply.CurrentLeaderTerm = term
+					reply.ServerRole = serverRole
 					return
 				} else {
 					Client_Received_Sequence_Number = client_Info_This.Received_Sequence_Number
@@ -633,12 +641,40 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-	kv.clients_Info = make(map[int64]*Client)
 
-	kv.db = make(map[string]string)
 
-	kv.lastIncludedIndex = default_sentinel_index
-	kv.lastIncludedTerm = default_start_term
+	if maxraftstate != -1 {
+		lastIncludedIndex, lastIncludedTerm, snapShotByte := kv.rf.SendSnapShotToKvServer() 
+		r := bytes.NewBuffer(snapShotByte)
+		d := labgob.NewDecoder(r)
+
+		var clients_Info map[int64]*Client //map from client serial number to its state pertaining cached responses
+		var db map[string]string
+
+		if d.Decode(&clients_Info) != nil ||
+			d.Decode(&db) != nil {
+			//log.Printf("could not read snapshot from raft for this server. There is error in reading.")
+			kv.lastIncludedIndex = default_sentinel_index
+			kv.lastIncludedTerm = default_start_term
+
+			kv.clients_Info = make(map[int64]*Client)
+			kv.db = make(map[string]string)
+			
+		} else {
+			kv.lastIncludedIndex = lastIncludedIndex
+			kv.lastIncludedTerm = lastIncludedTerm
+			kv.clients_Info = clients_Info
+			kv.db = db
+			kv.emptyOperationBuffer()
+		}
+
+	} else {
+		kv.lastIncludedIndex = default_sentinel_index
+		kv.lastIncludedTerm = default_start_term
+
+		kv.clients_Info = make(map[int64]*Client)
+		kv.db = make(map[string]string)
+	}
 
 	kv.operationBuffer = make([]Op, 0)
 	kv.indexBuffer = make([]int, 0)
