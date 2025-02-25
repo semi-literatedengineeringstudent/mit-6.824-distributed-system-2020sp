@@ -8,13 +8,13 @@ const (
 	ErrServerKilled  = "ErrServerKilled"
 )
 
-type Err string
+//type Err string
 
 type DeletePrevRequestArgs struct {
 	PrevRequests []int64
 }
 type DeletePrevRequestReply struct {
-	Err Err
+	Err string
 }
 
 // Put or Append
@@ -26,11 +26,12 @@ type PutAppendArgs struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 
-	Serial_Number int64
+	Client_Serial_Number int64
+	Sequence_Number int
 }
 
 type PutAppendReply struct {
-	Err Err
+	Err string
 
 	CurrentLeaderId int
 	CurrentLeaderTerm int
@@ -40,11 +41,12 @@ type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
 
-	Serial_Number int64
+	Client_Serial_Number int64
+	Sequence_Number int
 }
 
 type GetReply struct {
-	Err   Err
+	Err   string
 	Value string
 
 	CurrentLeaderId int

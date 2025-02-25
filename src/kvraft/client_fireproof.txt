@@ -4,21 +4,18 @@ import "../labrpc"
 import "crypto/rand"
 import "math/big"
 
-import "log"
+//import "log"
 
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-
-	Client_Serial_Number int64 // serial number with which we uniquely identify the client
-
 	numberOfServers int
 
 	currentLeaderId int
 	currentLeaderTerm int
 
-	Sequence_Number int // 
+	prevRequests []int64
 }
 
 func (ck *Clerk)randServer() int {
@@ -40,17 +37,45 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
-
-	ck.Client_Serial_Number = nrand()
-
 	ck.numberOfServers = len(servers)
 
 	ck.currentLeaderId = invalid_leader
 	ck.currentLeaderTerm = invalid_term
 
-	ck.Sequence_Number = default_sentinel_index
+	ck.prevRequests = make([]int64, 0)
 
 	return ck
+}
+
+func(ck *Clerk) broadcastDeleteRequest() {
+	for i := 0; i < ck.numberOfServers; i++ {
+		prevRequestsToSend := make([]int64, 0)
+
+		for j := 0; j < len(ck.prevRequests); j++ {
+			prevRequestsToSend = append(prevRequestsToSend, ck.prevRequests[j])
+		}		
+		serverIndex := i
+		go func(prevRequestsToSend []int64, serverIndex int) {
+			args := DeletePrevRequestArgs{}
+			args.PrevRequests = prevRequestsToSend 
+
+			reply := DeletePrevRequestReply{}
+
+			okDeleted := ck.servers[serverIndex].Call("KVServer.DeletePrevRequest", &args, &reply)
+
+			if okDeleted {
+				if reply.Err == OK {
+					//log.Printf("Deleterequest RPC for requests preceeding serial number %d on server %d is successful", serialNumberToSend, serverIndex)
+				} else {
+					//log.Printf("server %d has been killed, fail to delete requests preceeding serial number %d ", serverIndex, serialNumberToSend)
+				} 
+			} else {
+				//log.Printf("delete to server %d for requests preceeding serial number %d has failed possibily due to network partition", serverIndex)
+			}
+
+			return
+		}(prevRequestsToSend, serverIndex)
+	}
 }
 
 //
@@ -70,11 +95,7 @@ func (ck *Clerk) Get(key string) string {
 	args := GetArgs{}
 
 	args.Key = key
-	
-	args.Client_Serial_Number = ck.Client_Serial_Number
-
-	ck.Sequence_Number = ck.Sequence_Number + 1
-	args.Sequence_Number = ck.Sequence_Number
+	args.Serial_Number = nrand()
 	
 	//log.Printf("initiate Get request with key %s and serial number %d", key, args.Serial_Number)
 
@@ -90,7 +111,11 @@ func (ck *Clerk) Get(key string) string {
 		if ok {
 			err := reply.Err
 			if (err == OK) {
-				log.Printf("For client %d, Get request with key %s and sequence number %d is successful, get %s", ck.Client_Serial_Number, key, args.Sequence_Number, reply.Value)
+				//log.Printf("Get request with key %s and serial number %d is successful, get %s", key, args.Serial_Number, reply.Value)
+				ck.prevRequests = append(ck.prevRequests, args.Serial_Number)
+
+				ck.broadcastDeleteRequest()
+
 				return reply.Value
 			} else if (err == ErrNoKey) {
 				//log.Printf("No key, Get request with key %s and serial number %d has failed", key, args.Serial_Number)
@@ -117,6 +142,7 @@ func (ck *Clerk) Get(key string) string {
 			}
 		} else {
 			//log.Printf("did not receive reply from server with id %d of term %d, Get request with key %s and serial number %d is unsuccessful possibily due to network partitiob, retry with same server",leaderId,  ck.currentLeaderTerm, key, args.Serial_Number)
+			//ck.currentLeaderId = ck.randServer()
 			ck.currentLeaderId = invalid_leader
 		}
 	}
@@ -143,10 +169,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Value = value
 	args.Op = op
 
-	args.Client_Serial_Number = ck.Client_Serial_Number
-
-	ck.Sequence_Number = ck.Sequence_Number + 1
-	args.Sequence_Number = ck.Sequence_Number
+	args.Serial_Number = nrand()
 
 	//log.Printf("initiate %s request with (key %s, value %s) and serial number %d", op, key, value, args.Serial_Number)
 
@@ -163,7 +186,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if ok {
 			err := reply.Err
 			if (err == OK) {
-				log.Printf("for client %d 's %s request with (key %s, value %s) and sequence number %d is successful", ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
+				//log.Printf("%s request with (key %s, value %s) and serial number %d is successful", op, key, value, args.Serial_Number)
+				ck.prevRequests = append(ck.prevRequests, args.Serial_Number)
+				ck.broadcastDeleteRequest()
 
 				return 
 			} else if (err == ErrServerKilled) {
@@ -187,6 +212,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			}
 		} else {
 			//log.Printf("did not receive reply from server with id %d of term %d, %s request with (key %s, value %s) and serial number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, op, key, value, args.Serial_Number)
+			//ck.currentLeaderId = ck.randServer()
 			ck.currentLeaderId = invalid_leader
 		}
 	}

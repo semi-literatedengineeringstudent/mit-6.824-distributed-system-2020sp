@@ -24,14 +24,12 @@ import "../labrpc"
 import "time"
 import "math/rand"
 import "math"
-//import "log"
+import "log"
 
 import "bytes"
 import "../labgob"
 import "errors"
 import "sort"
-
-//import "unsafe"
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -52,7 +50,12 @@ type ApplyMsg struct {
 
 	LastIncludedIndex int
 	LastIncludedTerm int
-	SnapShotByte []byte
+	DbState map[string]string
+	DeletedReplies map[int64]bool 
+	ProcessedRepliesErr map[int64]string
+	ProcessedRepliesValue map[int64]string
+
+
 }
 
 //
@@ -85,7 +88,9 @@ type Raft struct {
 	LastIncludedIndex int
 	LastIncludedTerm int
 
-	SnapShotByte []byte
+	DbState []KvPair
+
+	Replies []Reply
 
 	// volatile state on all servers
 	role int // role the server takes at this moment
@@ -126,6 +131,7 @@ type KvPair struct {
 
 type Reply struct {
 	Serial_Number int64
+	Deleted bool
 	Err string
 	Value string
 
@@ -172,12 +178,12 @@ func (rf *Raft) persist() {
 	e.Encode(rf.logEndIndex)
 	e.Encode(rf.current_sentinel_index)
 
-	/*logList := make([]*LogEntry, 0)
+	logList := make([]*LogEntry, 0)
 	for i := rf.logStartIndex; i <= rf.logEndIndex; i++ {
 		logList = append(logList, rf.logs[i])
-	}*/
+	}
 
-	e.Encode(rf.logs)
+	e.Encode(logList)
 
 	e.Encode(rf.maxraftstate)
 	state := w.Bytes()
@@ -187,18 +193,17 @@ func (rf *Raft) persist() {
 	if rf.maxraftstate != -1 {
 		w2 := new(bytes.Buffer)
 		e2 := labgob.NewEncoder(w2)
-
 		e2.Encode(rf.LastIncludedIndex)
-		//log.Printf("size of LastIncludedIndex is %d bytes", unsafe.Sizeof(rf.LastIncludedIndex))
 		e2.Encode(rf.LastIncludedTerm)
-		//log.Printf("size of LastIncludedTerm is %d bytes", unsafe.Sizeof(rf.LastIncludedTerm))
-		e2.Encode(rf.SnapShotByte)
-		//log.Printf("size of DbState is %d bytes", unsafe.Sizeof(rf.DbState))
-	
+		/*e2.Encode(rf.DbState)
+		e2.Encode(rf.DeletedReplies)
+		e2.Encode(rf.ProcessedRepliesErr)
+		e2.Encode(rf.ProcessedRepliesValue)*/
+		e2.Encode(rf.DbState)
+		e2.Encode(rf.Replies)
 		snapshot := w2.Bytes()
 		rf.persister.SaveStateAndSnapshot(state, snapshot)
-
-		//log.Printf("total snapshot size is %d", rf.persister.SnapshotSize())
+		log.Printf("snapshot size is %d", rf.persister.SnapshotSize())
 		return
 	} else {
 		rf.persister.SaveRaftState(state)
@@ -224,7 +229,7 @@ func (rf *Raft) readPersistState(state []byte) error {
 	var logStartIndex int
 	var logEndIndex int
 	var current_sentinel_index int
-	var logs map[int]*LogEntry
+	var logList []*LogEntry
 	var maxraftstate int
 
 	//check the persistent state
@@ -233,7 +238,7 @@ func (rf *Raft) readPersistState(state []byte) error {
 	   d.Decode(&logStartIndex) != nil ||
 	   d.Decode(&logEndIndex) != nil ||
 	   d.Decode(&current_sentinel_index) != nil ||
-	   d.Decode(&logs) != nil ||
+	   d.Decode(&logList) != nil ||
 	   d.Decode(&maxraftstate) != nil {
 		
 		//log.Printf("could not read persistent state for this server. Either there has been no persistent state or there is error in reading.")
@@ -246,8 +251,11 @@ func (rf *Raft) readPersistState(state []byte) error {
 		rf.logStartIndex = logStartIndex
 		rf.logEndIndex = logEndIndex
 		rf.current_sentinel_index = current_sentinel_index
-		
-		rf.logs = logs
+		logMap := make(map[int]*LogEntry)
+		for i := 0; i < len(logList); i++ {
+			logMap[i + rf.logStartIndex] = logList[i]
+		}
+		rf.logs = logMap
 		rf.maxraftstate = maxraftstate
 
 		return nil
@@ -269,13 +277,19 @@ func (rf *Raft) readPersistSnapshot(snapshot []byte) error {
 	// var for state machine snapshot
 	var LastIncludedIndex int
 	var LastIncludedTerm int
+	/*var DbState map[string]string
+	var DeletedReplies map[int64]bool 
+	var ProcessedRepliesErr map[int64]string
+	var ProcessedRepliesValue map[int64]string*/
 
-	var SnapShotByte []byte
+	var DbState []KvPair
+	var Replies []Reply
 
 	//check the state machine snapshot
 	if d.Decode(&LastIncludedIndex) != nil ||
 	   d.Decode(&LastIncludedTerm) != nil ||
-	   d.Decode(&SnapShotByte) != nil{
+	   d.Decode(&DbState) != nil ||
+	   d.Decode(&Replies) != nil{
 		
 		//log.Printf("could not read persistent state for this server. Either there has been no persistent state or there is error in reading.")
 		return errors.New("could not read persistent state for this server. Either there has been no persistent state or there is error in reading.")
@@ -283,8 +297,8 @@ func (rf *Raft) readPersistSnapshot(snapshot []byte) error {
 		//save the state machine snapshot
 		rf.LastIncludedIndex = LastIncludedIndex
 		rf.LastIncludedTerm = LastIncludedTerm
-		rf.SnapShotByte = SnapShotByte
-
+		rf.DbState = DbState
+		rf.Replies = Replies
 		return nil
 	}
 }
@@ -976,7 +990,13 @@ type InstallSnapshotArgs struct {
 	LastIncludedIndex int
 	LastIncludedTerm int
 
-	SnapShotByte []byte
+	/*DbState map[string]string
+	DeletedReplies map[int64]bool
+	ProcessedRepliesErr map[int64]string
+	ProcessedRepliesValue map[int64]string*/
+	DbState []KvPair
+
+	Replies []Reply
 }
 
 type InstallSnapshotReply struct {
@@ -984,8 +1004,150 @@ type InstallSnapshotReply struct {
 	CurrentLeaderId int
 }
 
+/*type SnapshotCommand struct {
+	LastIncludedIndex int
+	LastIncludedTerm int
+	DbState map[string]string
+	DeletedReplies map[int64]bool 
+	ProcessedRepliesErr map[int64]string
+	ProcessedRepliesValue map[int64]string
+}*/
 
-func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int, SnapShotByte []byte) {
+
+
+func copyDbState(DbState map[string]string) map[string]string{
+	mapToReturn := make(map[string]string)
+	for key, value := range DbState {
+		mapToReturn[key] = value
+	}
+	return mapToReturn
+}
+
+func copyDbStateCompressed(DbState []KvPair) []KvPair {
+	DbStateToReturn := make([]KvPair, 0)
+
+	for i := 0; i < len(DbState); i++ {
+		kvPair := KvPair{}
+		kvPair.Key = DbState[i].Key
+		kvPair.Value = DbState[i].Value
+
+		DbStateToReturn = append(DbStateToReturn, kvPair)
+	}
+	return DbStateToReturn
+
+}
+func compressDbState(DbStateDecompressed map[string]string) []KvPair {
+	DbStateCompressed := make([]KvPair, 0)
+	for key, value := range DbStateDecompressed {
+		kvPair := KvPair{}
+		kvPair.Key = key
+		kvPair.Value = value
+		DbStateCompressed = append(DbStateCompressed, kvPair)
+	}
+	return DbStateCompressed
+}
+
+func decompressDbState(DbStateCompressed []KvPair) map[string]string {
+	DbStateDecompressed := make(map[string]string)
+
+	for i := 0; i < len(DbStateCompressed); i++ {
+		DbStateDecompressed[DbStateCompressed[i].Key] = DbStateCompressed[i].Value
+	}
+	return DbStateDecompressed 
+}
+
+
+
+
+func copyDeletedReplies(DeletedReplies map[int64]bool) map[int64]bool{
+	mapToReturn := make(map[int64]bool)
+	for serial_number, deleted := range DeletedReplies {
+		mapToReturn[serial_number] = deleted
+	}
+	return mapToReturn
+}
+
+func copyProcessedRepliesErr(ProcessedRepliesErr map[int64]string) map[int64]string{
+	mapToReturn := make(map[int64]string)
+	for serial_number, Err := range ProcessedRepliesErr {
+		mapToReturn[serial_number] = Err
+	}
+	return mapToReturn
+}
+
+func copyProcessedRepliesValue(ProcessedRepliesValue map[int64]string) map[int64]string{
+	mapToReturn := make(map[int64]string)
+	for serial_number, Value := range ProcessedRepliesValue {
+		mapToReturn[serial_number] = Value
+	}
+	return mapToReturn
+}
+
+func copyRepliesCompressed(Replies []Reply) []Reply {
+	RepliesToReturn := make([]Reply, 0)
+
+	for i := 0; i < len(Replies); i++ {
+		reply := Reply{}
+		if Replies[i].Deleted {
+			reply.Serial_Number = Replies[i].Serial_Number
+			reply.Deleted = Replies[i].Deleted
+		} else {
+			reply.Serial_Number = Replies[i].Serial_Number
+			reply.Err = Replies[i].Err
+			reply.Value = Replies[i].Value
+		}
+		RepliesToReturn = append(RepliesToReturn, reply)
+	}
+	return RepliesToReturn
+}
+
+func compressReplies(DeletedReplies map[int64]bool, ProcessedRepliesErr map[int64]string, ProcessedRepliesValue map[int64]string) []Reply {
+	Replies := make([]Reply, 0)
+	for serial_number, deleted := range DeletedReplies {
+		reply := Reply{}
+		reply.Serial_Number = serial_number
+		reply.Deleted = deleted
+
+		Replies = append(Replies, reply)
+	}
+	numDeletedRequest := len(Replies)
+	log.Printf("number of deleted requests handled is %d", numDeletedRequest)
+
+	for serial_number, err := range ProcessedRepliesErr {
+		value := ProcessedRepliesValue[serial_number]
+
+		reply := Reply{}
+		reply.Serial_Number = serial_number
+		reply.Err = err
+		reply.Value = value
+
+		Replies = append(Replies, reply)
+	}
+	log.Printf("number of undeleted requests handled is %d", len(Replies) - numDeletedRequest)
+	
+	return Replies
+}
+
+func decompressReplies(Replies []Reply) (map[int64]bool, map[int64]string, map[int64]string) {
+	DeletedReplies := make(map[int64]bool)
+	ProcessedRepliesErr := make(map[int64]string)
+	ProcessedRepliesValue := make(map[int64]string)
+
+	for i := 0; i < len(Replies); i++ {
+		reply := Replies[i]
+		serial_number := reply.Serial_Number
+		if reply.Deleted {
+			DeletedReplies[serial_number] = reply.Deleted
+		} else {
+			ProcessedRepliesErr[serial_number] = reply.Err
+			ProcessedRepliesValue[serial_number] = reply.Value
+		}
+	}
+	return DeletedReplies, ProcessedRepliesErr, ProcessedRepliesValue
+}
+
+
+func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int, DbState map[string]string, DeletedReplies map[int64]bool, ProcessedRepliesErr map[int64]string, ProcessedRepliesValue map[int64]string) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if (rf.role != leader_role) {
@@ -997,7 +1159,7 @@ func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int,
 		return
 	}
 
-	//log.Printf("this leader server %d of Term %d has sentinel_index %d, logStartIndex %d, logEndIndex %d, and try to trim to lastIncludeIndex %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, LastIncludedIndex)
+	log.Printf("this leader server %d of Term %d has sentinel_index %d, logStartIndex %d, logEndIndex %d, and try to trim to lastIncludeIndex %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, LastIncludedIndex)
 
 	newMap := make(map[int]*LogEntry)
 	for i := LastIncludedIndex + 1; i <= rf.logEndIndex; i++ {
@@ -1014,12 +1176,13 @@ func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int,
 		rf.logStartIndex =  rf.current_sentinel_index + 1
 	}
 
-	//log.Printf("this leader server %d of Term %d now has sentinel_index %d, logStartIndex %d, logEndIndex %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex)
+	log.Printf("this leader server %d of Term %d now has sentinel_index %d, logStartIndex %d, logEndIndex %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex)
 
 	rf.LastIncludedIndex = LastIncludedIndex
 	rf.LastIncludedTerm = LastIncludedTerm
 
-	rf.SnapShotByte = SnapShotByte
+	rf.DbState = compressDbState(DbState)
+	rf.Replies = compressReplies(DeletedReplies, ProcessedRepliesErr, ProcessedRepliesValue)
 
 	rf.persist()
 	numberOfPeers := len(rf.peers)
@@ -1028,7 +1191,7 @@ func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int,
 			serverIndex := i
 			rf.nextIndex[serverIndex] = int(math.Max(float64(rf.nextIndex[serverIndex]), float64(LastIncludedIndex + 1)))
 			rf.matchIndex[serverIndex] = int(math.Max(float64(rf.matchIndex[serverIndex]), float64(LastIncludedIndex)))
-			//log.Printf("this leader server %d of Term %d now send snapshot to server %d", rf.me, rf.currentTerm, serverIndex)
+			log.Printf("this leader server %d of Term %d now send snapshot to server %d", rf.me, rf.currentTerm, serverIndex)
 			rf.sendInstallSnapshotSingleServer(serverIndex)
 		}
 	}
@@ -1043,7 +1206,13 @@ func (rf *Raft) sendInstallSnapshotSingleServer(serverIndex int) {
 	args.LastIncludedIndex = rf.LastIncludedIndex
 	args.LastIncludedTerm = rf.LastIncludedTerm
 
-	args.SnapShotByte = rf.SnapShotByte
+	/*args.DbState = copyDbState(rf.DbState)
+	args.DeletedReplies = copyDeletedReplies(rf.DeletedReplies)
+	args.ProcessedRepliesErr = copyProcessedRepliesErr(rf.ProcessedRepliesErr)
+	args.ProcessedRepliesValue = copyProcessedRepliesValue(rf.ProcessedRepliesValue)*/
+	args.DbState = copyDbStateCompressed(rf.DbState)
+
+	args.Replies = copyRepliesCompressed(rf.Replies)
 
 	reply := InstallSnapshotReply{}
 	
@@ -1129,7 +1298,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.mu.Unlock()
 		return
 	}
-	//log.Printf("this server %d of term %d with sentinel_index %d, logStartIndex %d, and logEndIndex %d has received installShapShot rpc from leader %d, trim to %d ", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, args.LeaderId, args.LastIncludedIndex)
+	log.Printf("this server %d of term %d with sentinel_index %d, logStartIndex %d, and logEndIndex %d has received installShapShot rpc from leader %d, trim to %d ", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, args.LeaderId, args.LastIncludedIndex)
 
 
 	if (args.LastIncludedIndex < rf.logEndIndex) {
@@ -1153,7 +1322,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			rf.LastIncludedIndex = args.LastIncludedIndex
 			rf.LastIncludedTerm = args.LastIncludedTerm
 
-			rf.SnapShotByte = args.SnapShotByte
+			rf.DbState = copyDbStateCompressed(args.DbState)
+			rf.Replies = copyRepliesCompressed(args.Replies)
 
 			rf.lastApplied = int(math.Max(float64(rf.lastApplied), float64(rf.LastIncludedIndex)))
 			
@@ -1166,7 +1336,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			applyMsg.LastIncludedIndex = rf.LastIncludedIndex
 			applyMsg.LastIncludedTerm = rf.LastIncludedTerm
 
-			applyMsg.SnapShotByte = rf.SnapShotByte
+			applyMsg.DbState = decompressDbState(rf.DbState)
+			applyMsg.DeletedReplies, applyMsg.ProcessedRepliesErr, applyMsg.ProcessedRepliesValue = decompressReplies(rf.Replies)
 
 			rf.mu.Unlock()
 			//log.Printf("this server %d of term %d with sentinel_index %d, logStartIndex %d, and logEndIndex %d now send snapshot with lastIncludeIndex %d (%d) and lastIncludeTerm %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, applyMsg.LastIncludedIndex, rf.LastIncludedIndex, applyMsg.LastIncludedTerm)
@@ -1188,7 +1359,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.LastIncludedIndex = args.LastIncludedIndex
 	rf.LastIncludedTerm = args.LastIncludedTerm
 
-	rf.SnapShotByte = args.SnapShotByte
+	rf.DbState = copyDbStateCompressed(args.DbState)
+	rf.Replies = copyRepliesCompressed(args.Replies)
 
 	rf.lastApplied = int(math.Max(float64(rf.lastApplied), float64(rf.LastIncludedIndex)))
 
@@ -1202,7 +1374,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	applyMsg.LastIncludedIndex = rf.LastIncludedIndex
 	applyMsg.LastIncludedTerm = rf.LastIncludedTerm
 
-	applyMsg.SnapShotByte = rf.SnapShotByte
+	applyMsg.DbState = decompressDbState(rf.DbState)
+	applyMsg.DeletedReplies, applyMsg.ProcessedRepliesErr, applyMsg.ProcessedRepliesValue = decompressReplies(rf.Replies)
 	//log.Printf("this server %d of term %d with sentinel_index %d, logStartIndex %d, and logEndIndex %d now send snapshot with lastIncludeIndex %d (%d) and lastIncludeTerm %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, applyMsg.LastIncludedIndex, rf.LastIncludedIndex, applyMsg.LastIncludedTerm)
 	rf.mu.Unlock()
 
@@ -1331,22 +1504,18 @@ func (rf *Raft) syncCommitIndexAndLastApplied() {
 		//log.Printf("lastApplied is %d", rf.lastApplied)
 		//log.Printf("commitIndex is %d", rf.commitIndex)
 		//log.Printf("logEnd is %d", rf.logEndIndex)
-		applyStart := rf.lastApplied + 1
-		applyEnd := rf.commitIndex
-		for i := applyStart; i <= applyEnd; i++ {
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 			applyMsg := ApplyMsg{}
 			applyMsg.CommandValid = true
 			applyMsg.Command = rf.logs[i].Command
 			applyMsg.CommandIndex = i
 			applyMsg.CommandTerm = rf.logs[i].Term
-
-			rf.lastApplied = i
 			rf.mu.Unlock()
 			rf.applyMessage(applyMsg)
 			rf.mu.Lock()
 			
 		}
-		//rf.lastApplied = int(math.Max(float64(rf.lastApplied), float64(rf.commitIndex)))
+		rf.lastApplied = int(math.Max(float64(rf.lastApplied), float64(rf.commitIndex)))
 		rf.applyMsgCond.L.Unlock()
 	}
 }
@@ -1844,7 +2013,13 @@ func MakeWithSnapshot(peers []*labrpc.ClientEnd, me int,
 			rf.LastIncludedIndex = default_sentinel_index
 			rf.LastIncludedTerm = default_start_term 
 			
-			rf.SnapShotByte = make([]byte, 0)
+			/*rf.DbState = make(map[string]string)
+			rf.DeletedReplies = make(map[int64]bool) 
+			rf.ProcessedRepliesErr = make(map[int64]string)
+			rf.ProcessedRepliesValue = make(map[int64]string)*/
+			rf.DbState = make([]KvPair, 0)
+			rf.Replies = make([]Reply, 0)
+
 		}
 	}
 

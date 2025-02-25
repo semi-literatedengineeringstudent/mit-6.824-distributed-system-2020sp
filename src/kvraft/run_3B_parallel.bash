@@ -4,7 +4,7 @@
 num_instances=$1
 
 # Command to execute 
-command="go test -race -run 3A" 
+command="go test -race -run 3B" 
 
 # Run the command in parallel
 for i in $(seq 1 $num_instances); do
