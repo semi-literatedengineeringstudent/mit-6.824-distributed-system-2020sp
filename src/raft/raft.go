@@ -984,12 +984,16 @@ func (rf *Raft) updateCommitIndex() {
 
 	//(2)
 	for j := rf.quorum - 1; j < numberOfPeers; j++ {
-		if matchIndexList[j] > rf.commitIndex && matchIndexList[j] >= rf.logStartIndex && rf.logs[matchIndexList[j]].Term == rf.currentTerm {
+		if matchIndexList[j] > rf.commitIndex && matchIndexList[j] >= rf.logStartIndex {
 			// (1) and (3)
-			rf.commitIndex = matchIndexList[j]
-			//log.Printf("this serf.persister.RaftStateSize() rver %d as leader (term %d) successfully commited entry at index %d", rf.me, rf.currentTerm, rf.commitIndex)
-			rf.applyMsgCond.Broadcast()
-			return
+			if (rf.logs[matchIndexList[j]].Term == rf.currentTerm) {
+				//commitIndexPrev := rf.commitIndex
+				rf.commitIndex = matchIndexList[j]
+				//log.Printf("this server %d as leader (term %d) successfully commited index from %d to %d", rf.me, rf.currentTerm, commitIndexPrev, rf.commitIndex)
+				rf.applyMsgCond.Broadcast()
+				return
+			}
+			
 		}
 	}
 	//log.Printf("this server %d as leader (term %d) did not update its commitIndex", rf.me, rf.currentTerm)
@@ -1596,7 +1600,7 @@ func (rf *Raft) actAsLeader() {
 				}
 			}
 		}
-		//rf.updateCommitIndex()
+		rf.updateCommitIndex()
 		time.Sleep(time.Duration(leader_heartbeat_millisecond) * time.Millisecond)
 	}
 }

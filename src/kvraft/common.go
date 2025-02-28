@@ -6,6 +6,8 @@ const (
 	ErrWrongLeader = "ErrWrongLeader"
 
 	ErrServerKilled  = "ErrServerKilled"
+
+	ErrAlreadyReceived = "ErrAlreadyReceived"
 )
 
 //type Err string
@@ -27,6 +29,8 @@ type PutAppendArgs struct {
 	// otherwise RPC will break.
 
 	Client_Serial_Number int64
+
+	Received_Sequence_Number int
 	Sequence_Number int
 }
 
@@ -44,6 +48,8 @@ type GetArgs struct {
 	// You'll have to add definitions here.
 
 	Client_Serial_Number int64
+
+	Received_Sequence_Number int
 	Sequence_Number int
 }
 
