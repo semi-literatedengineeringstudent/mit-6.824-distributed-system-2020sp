@@ -532,7 +532,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	//## need to refine on "last new entry" index. and figure out reasoning in step 5...
-	if args.LeaderCommit > rf.commitIndex && args.Term == rf.last_entry_term{
+	if args.LeaderCommit > rf.commitIndex && args.Term == rf.last_entry_term {
 		// if LeaderCommit <= commitIndex, there is nothing new we need to perform
 		// also we want to make sure the leader term is same as last_entry term before update commit index
 		// because commitIndex of the current server should be strictly following the current leader
@@ -1218,7 +1218,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			
 			rf.persist()
 			// 8. reset state machine using snapshot contents (and load
-			// snapshot’s cluster configuration)
+			// snapshot’s cluster configuration)is unsuccessful, retry with leader
 
 			applyMsg := ApplyMsg{}
 			applyMsg.CommandValid = false
@@ -1402,7 +1402,8 @@ func (rf *Raft) syncCommitIndexAndLastApplied() {
 
 		//applyStart := rf.lastApplied + 1
 		applyStart := int(math.Max(float64(rf.lastApplied + 1), float64(rf.logStartIndex)))
-		applyEnd := rf.commitIndex
+		//applyEnd := rf.commitIndex
+		applyEnd := int(math.Min(float64(rf.commitIndex), float64(rf.logEndIndex)))
 
 		for i := applyStart; i <= applyEnd; i++ {
 			applyMsg := ApplyMsg{}
