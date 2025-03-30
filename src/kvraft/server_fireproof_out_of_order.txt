@@ -739,7 +739,9 @@ func (kv *KVServer) emptyClientsCachedRequests() {
 		//log.Printf(toPrint)
 
 		for i := 0; i < len(sequence_NumberList); i++ {
-			if (sequence_NumberList[i] == client.Last_Processed_Sequence_Number + 1) {
+			if (sequence_NumberList[i] < client.Last_Processed_Sequence_Number + 1) {
+				continue
+			} else if (sequence_NumberList[i] == client.Last_Processed_Sequence_Number + 1) {
 				//operationToApply := client.Cached_Request[sequence_NumberList[i]]
 				kv.applyOperation(*client.Cached_Request[sequence_NumberList[i]])
 			} else {

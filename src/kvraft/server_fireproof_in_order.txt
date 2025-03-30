@@ -156,11 +156,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	
 
-	log.Printf("This server %d has received Get request with key %s and serial number %d", kv.me, key, Sequence_Number)
+	//log.Printf("This server %d has received Get request with key %s and serial number %d", kv.me, key, Sequence_Number)
 
 	if kv.killed() {
 		reply.Err = ErrServerKilled
-		log.Printf("This server %d has been killed", kv.me)
+		//log.Printf("This server %d has been killed", kv.me)
 		return
 	} 
 
@@ -169,7 +169,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	term, isLeader, currentLeaderId, serverRole := kv.rf.GetStateWTF()
 
 	if !isLeader {
-		log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+		//log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 		reply.Err = ErrWrongLeader
 		reply.CurrentLeaderId = currentLeaderId
 		reply.CurrentLeaderTerm = term
@@ -194,7 +194,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			reply.CurrentLeaderId = kv.me
 			reply.CurrentLeaderTerm = term
 
-			log.Printf("This server %d has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, key, Client_Serial_Number, Sequence_Number)
+			//log.Printf("This server %d has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, key, Client_Serial_Number, Sequence_Number)
 			
 			return
 		} else {
@@ -210,7 +210,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			_, _, isLeader := kv.rf.Start(opToRaft)
 			
 			if !isLeader {
-				log.Printf("This server %d has cached result for Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+				//log.Printf("This server %d has cached result for Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 				reply.Err = ErrWrongLeader
 				reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm() 
 				return
@@ -221,21 +221,21 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 						kv.tryInitSnapShot()
 					}
 				}
-				log.Printf("This server %d does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", kv.me, key, Sequence_Number)
+				//log.Printf("This server %d does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", kv.me, key, Sequence_Number)
 				kv.mu.Unlock()
 			}
 			
 			for {
 				kv.mu.Lock()
 				if kv.killed() {
-					log.Printf("This server %d has been killed", kv.me)
+					//log.Printf("This server %d has been killed", kv.me)
 					reply.Err = ErrServerKilled
 					return
 				} 
 
 				term, isLeader, currentLeaderId, serverRole = kv.rf.GetStateWTF()
 				if !isLeader {
-					log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+					//log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 				
 					reply.Err = ErrWrongLeader
 					reply.CurrentLeaderId = currentLeaderId
@@ -259,11 +259,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 						reply.CurrentLeaderId = kv.me
 						reply.CurrentLeaderTerm = term
 			
-						log.Printf("This server %d has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, key, Client_Serial_Number, Sequence_Number)
+						//log.Printf("This server %d has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, key, Client_Serial_Number, Sequence_Number)
 						
 						return
 					} else {
-						log.Printf("This server %d does not have cached result for Get request with key %s, client: %d, seq_num: %d, keep waiting...", kv.me, key, Client_Serial_Number, Sequence_Number)
+						//log.Printf("This server %d does not have cached result for Get request with key %s, client: %d, seq_num: %d, keep waiting...", kv.me, key, Client_Serial_Number, Sequence_Number)
 					}
 				}
 				kv.mu.Unlock()
@@ -306,14 +306,14 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		// we have this client on file, we can simply delete all requests with 
 		// sequence number < sequence number of current request
 
-		log.Printf("number of cached response for client %d before deletion is %d", Client_Serial_Number, len(client_Info_This.Cached_Response))
+		//log.Printf("number of cached response for client %d before deletion is %d", Client_Serial_Number, len(client_Info_This.Cached_Response))
 
 		for seq_Num, _ := range client_Info_This.Cached_Response {
 			if seq_Num < Sequence_Number {
 				delete(client_Info_This.Cached_Response, seq_Num)
 			}
 		}
-		log.Printf("number of cached response for client %d after deletion is %d", Client_Serial_Number, len(client_Info_This.Cached_Response))
+		//log.Printf("number of cached response for client %d after deletion is %d", Client_Serial_Number, len(client_Info_This.Cached_Response))
 		// we know all requests up to Sequence_Number - 1 has been received by the client so we need to update Received sequence number as well
 		client_Info_This.Received_Sequence_Number = int(math.Max(float64(client_Info_This.Received_Sequence_Number), float64(Sequence_Number - 1)))
 		// due to asychronous network, it is possible that the older request arrives this server as result of re routing, but this server already 
@@ -321,11 +321,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	
 
-	log.Printf("This server %d has received Get request with key %s and serial number %d", kv.me, key, Sequence_Number)
+	//log.Printf("This server %d has received Get request with key %s and serial number %d", kv.me, key, Sequence_Number)
 
 	if kv.killed() {
 		reply.Err = ErrServerKilled
-		log.Printf("This server %d has been killed", kv.me)
+		//log.Printf("This server %d has been killed", kv.me)
 		return
 	} 
 
@@ -334,7 +334,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	term, isLeader, currentLeaderId, serverRole := kv.rf.GetStateWTF()
 
 	if !isLeader {
-		log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+		//log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 		reply.Err = ErrWrongLeader
 		reply.CurrentLeaderId = currentLeaderId
 		reply.CurrentLeaderTerm = term
@@ -357,7 +357,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			reply.CurrentLeaderId = kv.me
 			reply.CurrentLeaderTerm = term
 
-			log.Printf("This server %d has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, key, Client_Serial_Number, Sequence_Number)
+			//log.Printf("This server %d has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, key, Client_Serial_Number, Sequence_Number)
 			
 			return
 		} else {
@@ -374,7 +374,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			_, _, isLeader := kv.rf.Start(opToRaft)
 			
 			if !isLeader {
-				log.Printf("This server %d has cached result for Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+				//log.Printf("This server %d has cached result for Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 				reply.Err = ErrWrongLeader
 				reply.CurrentLeaderId, reply.CurrentLeaderTerm = kv.rf.GetCurrentLeaderIdAndTerm() 
 				return
@@ -385,21 +385,21 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 						kv.tryInitSnapShot()
 					}
 				}
-				log.Printf("This server %d does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", kv.me, key, Sequence_Number)
+				//log.Printf("This server %d does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", kv.me, key, Sequence_Number)
 				kv.mu.Unlock()
 			}
 			
 			for {
 				kv.mu.Lock()
 				if kv.killed() {
-					log.Printf("This server %d has been killed", kv.me)
+					//log.Printf("This server %d has been killed", kv.me)
 					reply.Err = ErrServerKilled
 					return
 				} 
 
 				term, isLeader, currentLeaderId, serverRole = kv.rf.GetStateWTF()
 				if !isLeader {
-					log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+					//log.Printf("This server %d has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, key, Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 		
 					reply.Err = ErrWrongLeader
 					reply.CurrentLeaderId = currentLeaderId
@@ -422,11 +422,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 						reply.CurrentLeaderId = kv.me
 						reply.CurrentLeaderTerm = term
 			
-						log.Printf("This server %d has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, key, Client_Serial_Number, Sequence_Number)
+						//log.Printf("This server %d has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, key, Client_Serial_Number, Sequence_Number)
 						
 						return
 					} else {
-						log.Printf("This server %d does not cached result for Get request with key %s, client: %d, seq_num: %d, keep waiting...", kv.me, key, Client_Serial_Number, Sequence_Number)
+						//log.Printf("This server %d does not cached result for Get request with key %s, client: %d, seq_num: %d, keep waiting...", kv.me, key, Client_Serial_Number, Sequence_Number)
 					}
 				}
 				kv.mu.Unlock()
@@ -534,15 +534,15 @@ func(kv *KVServer) applyOperation(operation Op) {
 	if op == "Get" {
 		dbvalue, ok:= kv.db[key]
 		if ok {
-			log.Printf("This server %d is caching result for Get request with key %s and serial number %d, cached value is %s", kv.me, key, Sequence_Number, dbvalue)
+			//log.Printf("This server %d is caching result for Get request with key %s and serial number %d, cached value is %s", kv.me, key, Sequence_Number, dbvalue)
 			replyToStore.Err = OK
 			replyToStore.Value = dbvalue
 		} else {
-			log.Printf("This server %d is caching result for Get request with key %s and serial number %d, there is no key so return ErrNoKey", kv.me, key, Sequence_Number)
+			//log.Printf("This server %d is caching result for Get request with key %s and serial number %d, there is no key so return ErrNoKey", kv.me, key, Sequence_Number)
 			replyToStore.Err = ErrNoKey
 		}
 	} else if (op == "Put") {
-		log.Printf("This server %d is caching result for Put request with key %s and serial number %d, cached value is %s", kv.me, key, Sequence_Number, value)
+		//log.Printf("This server %d is caching result for Put request with key %s and serial number %d, cached value is %s", kv.me, key, Sequence_Number, value)
 		kv.db[key] = value
 		replyToStore.Err = OK
 		replyToStore.Value = empty_string
@@ -551,10 +551,10 @@ func(kv *KVServer) applyOperation(operation Op) {
 		dbvalue, ok:= kv.db[key]
 		if ok {
 			kv.db[key] = dbvalue + value
-			log.Printf("This server %d is caching result for Append request with key %s and serial number %d, cached value is %s", kv.me, key, Sequence_Number, dbvalue + value)
+			//log.Printf("This server %d is caching result for Append request with key %s and serial number %d, cached value is %s", kv.me, key, Sequence_Number, dbvalue + value)
 		} else {
 			kv.db[key] =  value
-			log.Printf("This server %d is caching result for Append request with key %s and serial number %d, cached value is %s", kv.me, key, Sequence_Number, value)
+			//log.Printf("This server %d is caching result for Append request with key %s and serial number %d, cached value is %s", kv.me, key, Sequence_Number, value)
 		}
 		replyToStore.Err = OK
 		replyToStore.Value = empty_string
@@ -593,7 +593,7 @@ func (kv *KVServer) handleRequest(applyMessage raft.ApplyMsg) {
 
 			if d.Decode(&clients_Info) != nil ||
 			   d.Decode(&db) != nil {
-				log.Printf("could not read snapshot from raft for this server. There is error in reading.")
+				//log.Printf("could not read snapshot from raft for this server. There is error in reading.")
 				return
 			} else {
 				kv.lastIncludedIndex = LastIncludedIndex
@@ -653,7 +653,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 		if d.Decode(&clients_Info) != nil ||
 			d.Decode(&db) != nil {
-			log.Printf("could not read snapshot from raft for this server. There is error in reading.")
+			//log.Printf("could not read snapshot from raft for this server. There is error in reading.")
 			kv.lastIncludedIndex = default_sentinel_index
 			kv.lastIncludedTerm = default_start_term
 
