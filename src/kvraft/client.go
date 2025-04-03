@@ -4,8 +4,6 @@ import "../labrpc"
 import "crypto/rand"
 import "math/big"
 
-import "sync"
-
 //import "log"
 
 import "time"
@@ -14,8 +12,6 @@ import "time"
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-
-	mu        sync.Mutex
 
 	Client_Serial_Number int64 // serial number with which we uniquely identify the client
 
@@ -82,8 +78,6 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 //
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-
-	ck.mu.Lock()
 	args := GetArgs{}
 
 	args.Key = key
@@ -98,95 +92,71 @@ func (ck *Clerk) Get(key string) string {
 	reply := GetReply{}
 	//log.Printf("Client %d 's get request init with (key %s) and sequence number %d", ck.Client_Serial_Number, key, args.Sequence_Number)
 
-	leaderId := ck.currentLeaderId
-	leaderTerm := ck.currentLeaderTerm
+	//leaderId := ck.currentLeaderId
 
-	ck.mu.Unlock()
+	for {
+		leaderId := ck.currentLeaderId
+		//log.Printf("leaderId is %d", leaderId)
+		if (leaderId  == invalid_leader) {
+			leaderId = ck.randServer()
+			//log.Printf("For client %d, Get request with key %s and sequence number%d re-route to random server %d", ck.Client_Serial_Number, key, args.Sequence_Number, leaderId)
+		} 
 
-	resultCh := make(chan string, 1)
-
-	go func(ck *Clerk, args *GetArgs, reply *GetReply, leaderId int, leaderTerm int, resultCh chan string) {
-		for {
-			//leaderId := ck.currentLeaderId
-			if (leaderId  == invalid_leader) {
-				leaderId = ck.randServer()
-				//log.Printf("For client %d, Get request with key %s and sequence number%d re-route to random server %d", ck.Client_Serial_Number, key, args.Sequence_Number, leaderId)
-			} 
-	
-			//ck.RPC_Count = ck.RPC_Count + 1
-			//log.Printf("RPC sent by clerk %d is %d", ck.Client_Serial_Number, ck.RPC_Count)
-			ok := ck.servers[leaderId].Call("KVServer.Get", args, reply)
-			if ok {
-				err := reply.Err
-				if (err == OK) {
-					//log.Printf("For client %d, Get request with key %s and sequence number %d is successful, get %s", ck.Client_Serial_Number, key, args.Sequence_Number, reply.Value)
-					ck.mu.Lock()
-					ck.currentLeaderId = leaderId
-					ck.currentLeaderTerm = leaderTerm
-					ck.mu.Unlock()
-					resultCh <- reply.Value
-					return
-				} else if (err == ErrNoKey) {
-					//log.Printf("No key, for client %d Get request with key %s and sequence number %d has failed", ck.Client_Serial_Number, key, args.Sequence_Number)
-					ck.mu.Lock()
-					ck.currentLeaderId = leaderId
-					ck.currentLeaderTerm = leaderTerm
-					ck.mu.Unlock()
-					resultCh <- empty_string
-					return 
-				} else if (err == ErrServerKilled) {
-					//ck.currentLeaderId = invalid_leader
-					
-					//log.Printf("server with id %d of term %d has been killed, for client %d Get request with key %s and sequence number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, ck.Client_Serial_Number, key, args.Sequence_Number)
-					leaderId = invalid_leader
-				} else {
-					/*role := ""
-					if reply.ServerRole == follower_role {
-						role = "follower"
-					} else if reply.ServerRole == candidate_role {
-						role = "candidate"
-					} else {
-						role = "leader"
-					}*/
-					
-					if (reply.CurrentLeaderTerm > leaderTerm) {
-						//ck.currentLeaderId = reply.CurrentLeaderId
-						//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId,  ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
-						leaderId = reply.CurrentLeaderId
-						leaderTerm = reply.CurrentLeaderTerm
-					} else if (reply.CurrentLeaderTerm == leaderTerm){
-						if (reply.CurrentLeaderId == leaderId) {
-							//ck.currentLeaderId = invalid_leader
-							//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, leader did not realize lose of leadership, retry with random server", leaderId, ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number)
-							leaderId = invalid_leader
-							//leaderId = invalid_leader
-						} else {
-							//ck.currentLeaderId = reply.CurrentLeaderId
-							//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, retry with leader %d", leaderId, ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number, reply.CurrentLeaderId)
-							leaderId = reply.CurrentLeaderId
-							//leaderId = reply.CurrentLeaderId
-							time.Sleep(time.Duration(100) * time.Millisecond)
-						}
-					} else {
-						//ck.currentLeaderId = invalid_leader
-						//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, and it provides a leader of lower term, retry with random server", leaderId, ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number)
-						leaderId = invalid_leader
-						//leaderId = invalid_leader
-					}
-				}
+		ck.RPC_Count = ck.RPC_Count + 1
+		//log.Printf("RPC sent by clerk %d is %d, to %d", ck.Client_Serial_Number, ck.RPC_Count, leaderId)
+		ok := ck.servers[leaderId].Call("KVServer.Get", &args, &reply)
+		//log.Printf("clerk %d received response from %d", ck.Client_Serial_Number, leaderId)
+		if ok {
+			err := reply.Err
+			if (err == OK) {
+				//log.Printf("For client %d, Get request with key %s and sequence number %d is successful, get %s", ck.Client_Serial_Number, key, args.Sequence_Number, reply.Value)
+				ck.currentLeaderId = leaderId
+				return reply.Value
+			} else if (err == ErrNoKey) {
+				//log.Printf("No key, for client %d Get request with key %s and sequence number %d has failed", ck.Client_Serial_Number, key, args.Sequence_Number)
+				ck.currentLeaderId = leaderId
+				return empty_string
+			} else if (err == ErrServerKilled) {
+				//log.Printf("server with id %d of term %d has been killed, for client %d Get request with key %s and sequence number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, ck.Client_Serial_Number, key, args.Sequence_Number)
+				ck.currentLeaderId = invalid_leader
 			} else {
-				//ck.currentLeaderId = invalid_leader
-				//leaderId = invalid_leader
-				//log.Printf("did not receive reply from server with id %d of term %d, for client %d Get request with key %s and sequence number %d is unsuccessful possibily due to network partition, retry with same server", leaderId, ck.currentLeaderTerm, args.Client_Serial_Number, key, args.Sequence_Number)
-				leaderId = invalid_leader
+				/*role := ""
+				if reply.ServerRole == follower_role {
+					role = "follower"
+				} else if reply.ServerRole == candidate_role {
+					role = "candidate"
+				} else {
+					role = "leader"
+				}*/
+				
+				if (reply.CurrentLeaderTerm > ck.currentLeaderTerm) {
+
+					//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId,  ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+					ck.currentLeaderId = reply.CurrentLeaderId
+					ck.currentLeaderTerm = reply.CurrentLeaderTerm
+				} else if (reply.CurrentLeaderTerm == ck.currentLeaderTerm){
+					if (reply.CurrentLeaderId == leaderId) {
+						//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, leader did not realize lose of leadership, retry with random server", leaderId, ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number)
+						ck.currentLeaderId = invalid_leader
+					} else {
+	
+						//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, retry with leader %d", leaderId, ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number, reply.CurrentLeaderId)
+						ck.currentLeaderId = reply.CurrentLeaderId
+
+						time.Sleep(time.Duration(100) * time.Millisecond)
+					}
+				} else {
+					//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, and it provides a leader of lower term, retry with random server", leaderId, ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number)
+					ck.currentLeaderId = invalid_leader
+				}
 			}
+		} else {
+			//log.Printf("did not receive reply from server with id %d of term %d, for client %d Get request with key %s and sequence number %d is unsuccessful possibily due to network partition, retry with same server", leaderId, ck.currentLeaderTerm, args.Client_Serial_Number, key, args.Sequence_Number)
+			ck.currentLeaderId = invalid_leader
 		}
+	}
 
-	}(ck, &args, &reply, leaderId, leaderTerm, resultCh)
-
-	result := <-resultCh
-
-	return result
+	return empty_string
 }
 
 //
@@ -202,7 +172,6 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 
-	ck.mu.Lock()
 	args := PutAppendArgs{}
 
 	args.Key = key
@@ -218,89 +187,62 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	reply := PutAppendReply{}
 	//log.Printf("Client %d 's %s request init with (key %s, value %s) and sequence number %d", ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
 	
-	leaderId := ck.currentLeaderId
-	leaderTerm := ck.currentLeaderTerm
-	ck.mu.Unlock()
+	//leaderId := ck.currentLeaderId
+	for {
+		leaderId := ck.currentLeaderId
+		//log.Printf("leaderId is %d", leaderId)
+		if (leaderId  == invalid_leader) {
+			leaderId = ck.randServer()
+			//log.Printf("For client %d, %s request with (key %s, value %s) and sequence number %d re-route to random server %d", ck.Client_Serial_Number, op, key, value, args.Sequence_Number, leaderId)
+		} 
 
-	resultCh := make(chan bool, 1)
+		ck.RPC_Count = ck.RPC_Count + 1
+		//log.Printf("RPC sent by clerk %d is %d, to %d", ck.Client_Serial_Number, ck.RPC_Count, leaderId)
 
-	go func(ck *Clerk, args *PutAppendArgs, reply *PutAppendReply, leaderId int, leaderTerm int, resultCh chan bool) {
-		for {
-			//leaderId := ck.currentLeaderId
-			
-			if (leaderId == invalid_leader) {
-				leaderId = ck.randServer()
-				//log.Printf("For client %d, %s request with (key %s, value %s) and sequence number %d re-route to random server %d", ck.Client_Serial_Number, op, key, value, args.Sequence_Number, leaderId)
-			} 
-	
-			//ck.RPC_Count = ck.RPC_Count + 1
-			//log.Printf("RPC sent by clerk %d is %d", ck.Client_Serial_Number, ck.RPC_Count)
-	
-			ok := ck.servers[leaderId].Call("KVServer.PutAppend", args, reply)
-			if ok {
-				err := reply.Err
-				if (err == OK) {
-					//log.Printf("for client %d 's %s request with (key %s, value %s) and sequence number %d is successful", ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
-					ck.mu.Lock()
-					ck.currentLeaderId = leaderId
-					ck.currentLeaderTerm = leaderTerm
-					ck.mu.Unlock()
-					resultCh <- true
-					return 
-				} else if (err == ErrServerKilled) {
-					//log.Printf("server with id %d of term %d has been killed, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, retry with random server", leaderId, ck.currentLeaderTerm, ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
-					leaderId = invalid_leader
-					//leaderId = invalid_leader
-				} else {
-					/*role := ""
-					if reply.ServerRole == follower_role {
-						role = "follower"
-					} else if reply.ServerRole == candidate_role {
-						role = "candidate"
-					} else {
-						role = "leader"
-					}*/
-					if (reply.CurrentLeaderTerm > leaderTerm) {
-						//log.Printf("server with id %d of term %d has been lost leadership/or not a leader, role is %s, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId, ck.currentLeaderTerm, role, ck.Client_Serial_Number, op, key, value, args.Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
-						//ck.currentLeaderId = reply.CurrentLeaderId
-						//ck.currentLeaderTerm = reply.CurrentLeaderTerm
-						leaderId = reply.CurrentLeaderId
-						leaderTerm = reply.CurrentLeaderTerm
-					} else if (reply.CurrentLeaderTerm == leaderTerm){
-						if (reply.CurrentLeaderId == leaderId) {
-							
-							//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, leader did not realize lose of leadership, retry with random server",leaderId,  ck.currentLeaderTerm, role, ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
-							leaderId= invalid_leader
-							//leaderId = invalid_leader
-						} else {
-							
-							//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, retry with leader %d ",leaderId,  ck.currentLeaderTerm, role, ck.Client_Serial_Number, op, key, value, args.Sequence_Number, ck.currentLeaderId)
-							leaderId = reply.CurrentLeaderId
-							//leaderId = reply.CurrentLeaderId
-							time.Sleep(time.Duration(100) * time.Millisecond)
-						}
-					} else {
-						//ck.currentLeaderId = invalid_leader
-						//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, and it provides a leader of lower term, retry with random server", leaderId,  ck.currentLeaderTerm, role, ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
-						leaderId = invalid_leader
-						//leaderId = invalid_leader
-					}
-				}
+		ok := ck.servers[leaderId].Call("KVServer.PutAppend", &args, &reply)
+		//log.Printf("clerk %d received response from %d", ck.Client_Serial_Number, leaderId)
+		if ok {
+			err := reply.Err
+			if (err == OK) {
+				//log.Printf("for client %d 's %s request with (key %s, value %s) and sequence number %d is successful", ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
+				ck.currentLeaderId = leaderId
+				return 
+			} else if (err == ErrServerKilled) {
+				//log.Printf("server with id %d of term %d has been killed, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, retry with random server", leaderId, ck.currentLeaderTerm, ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
+				ck.currentLeaderId = invalid_leader
 			} else {
-				//ck.currentLeaderId = invalid_leader
-				//log.Printf("did not receive reply from server with id %d of term %d, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
-				leaderId= invalid_leader
-				//leaderId = invalid_leader
+				/*role := ""
+				if reply.ServerRole == follower_role {
+					role = "follower"
+				} else if reply.ServerRole == candidate_role {
+					role = "candidate"
+				} else {
+					role = "leader"
+				}*/
+				if (reply.CurrentLeaderTerm > ck.currentLeaderTerm) {
+					//log.Printf("server with id %d of term %d has been lost leadership/or not a leader, role is %s, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId, ck.currentLeaderTerm, role, ck.Client_Serial_Number, op, key, value, args.Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
+					ck.currentLeaderId = reply.CurrentLeaderId
+					ck.currentLeaderTerm = reply.CurrentLeaderTerm
+				} else if (reply.CurrentLeaderTerm == ck.currentLeaderTerm){
+					if (reply.CurrentLeaderId == leaderId) {
+						//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, leader did not realize lose of leadership, retry with random server",leaderId,  ck.currentLeaderTerm, role, ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
+						ck.currentLeaderId = invalid_leader
+					} else {
+						
+						//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, retry with leader %d ",leaderId,  ck.currentLeaderTerm, role, ck.Client_Serial_Number, op, key, value, args.Sequence_Number, ck.currentLeaderId)
+						ck.currentLeaderId = reply.CurrentLeaderId
+						time.Sleep(time.Duration(100) * time.Millisecond)
+					}
+				} else {
+					//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, and it provides a leader of lower term, retry with random server", leaderId,  ck.currentLeaderTerm, role, ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
+					ck.currentLeaderId = invalid_leader
+				}
 			}
+		} else {
+			//log.Printf("did not receive reply from server with id %d of term %d, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
+			ck.currentLeaderId = invalid_leader
 		}
-	}(ck, &args, &reply, leaderId, leaderTerm, resultCh)
-
-	result := <-resultCh
-	if (result) {
-		return
 	}
-
-	
 }
 
 func (ck *Clerk) Put(key string, value string) {

@@ -24,7 +24,7 @@ import "../labrpc"
 import "time"
 import "math/rand"
 import "math"
-//import "log"
+import "log"
 
 import "bytes"
 import "../labgob"
@@ -104,6 +104,8 @@ type Raft struct {
 	// on each server, index of highest log entry known to match that of leader's 
 	// update upon every successful AppendEntries RPC 
 	
+	timeLastHeartBeatInit time.Time
+
 	//volatile states on follower
 	timeLastHeartBeat time.Time
 	electionTimeOutMilliSecond int
@@ -152,14 +154,21 @@ func (rf *Raft) GetStateWTF() (int, bool, int, int) {
 	var term int
 	var isleader bool
 	var currentLeaderId int
+	var roleId int
+	log.Printf("Raft server %d start GetStateWTF", rf.me)
+	log.Printf("Raft server %d start locked", rf.me)
 	rf.mu.Lock()
+	log.Printf("Raft server %d finished locked", rf.me)
 	defer rf.mu.Unlock()
 	term = rf.currentTerm
 	if rf.role == leader_role {
 		isleader = true
 	} 
 	currentLeaderId = rf.currentLeaderId
-	return term, isleader, currentLeaderId, rf.role
+	roleId = rf.role
+	log.Printf("Raft server %d finish GetStateWTF", rf.me)
+	log.Printf("Raft server %d defer unlock", rf.me)
+	return term, isleader, currentLeaderId, roleId
 }
 
 func (rf *Raft) GetRaftStateSize() int {
@@ -204,16 +213,14 @@ func (rf *Raft) persist() {
 		e2 := labgob.NewEncoder(w2)
 
 		e2.Encode(rf.LastIncludedIndex)
-		//log.Printf("size of LastIncludedIndex is %d bytes", unsafe.Sizeof(rf.LastIncludedIndex))
+
 		e2.Encode(rf.LastIncludedTerm)
-		//log.Printf("size of LastIncludedTerm is %d bytes", unsafe.Sizeof(rf.LastIncludedTerm))
+
 		e2.Encode(rf.SnapShotByte)
-		//log.Printf("size of DbState is %d bytes", unsafe.Sizeof(rf.DbState))
 	
 		snapshot := w2.Bytes()
 		rf.persister.SaveStateAndSnapshot(state, snapshot)
 
-		//log.Printf("total snapshot size is %d", rf.persister.SnapshotSize())
 		return
 	} else {
 		rf.persister.SaveRaftState(state)
@@ -429,10 +436,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					//AppendEntries 2. Reply false if log doesnt contain an entry at prevLogIndex whose term matches prevLogTerm (�5.3)
 				} else {
 
-					if args.PrevLogIndex == rf.current_sentinel_index && args.PrevLogTerm == default_start_term {
+					/*if args.PrevLogIndex == rf.current_sentinel_index && args.PrevLogTerm == default_start_term {
+						reply.Term = args.Term
+						reply.Success = true
+					} */
+					
+					if args.PrevLogIndex <= rf.current_sentinel_index {
 						reply.Term = args.Term
 						reply.Success = true
 					} else {
+						
+						//log.Printf("sentinel index is %d, log start is %d, log end is %d, and prevLogIndex is %d", rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, args.PrevLogIndex)
+						
 						entriesToCheck := *(rf.logs[args.PrevLogIndex])
 						if entriesToCheck.Term != args.PrevLogTerm {
 							reply.Term = args.Term
@@ -953,7 +968,7 @@ func (rf *Raft) appendNewEntriesFromMatchedIndex(serverIndex int, term int, lead
 				
 			}
 		} else {
-			////log.Printf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d may be due to network disconnection", leaderId, term, serverIndex, entriesStart, entriesEnd)
+			//log.Printf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d may be due to network disconnection", leaderId, term, serverIndex, entriesStart, entriesEnd)
 			return term, false, true
 		}
 	}
@@ -966,14 +981,14 @@ func (rf *Raft) updateCommitIndex() {
 
 	rf.mu.Lock()
 
-	//log.Printf("this server %d as leader (term %d) attempts to update commitIndex", rf.me, rf.currentTerm)
+	//log.Printf("this server %d as leader (term %d) attempts to update commitIndex, where current commitindex is %d", rf.me, rf.currentTerm, rf.commitIndex)
 	
 	defer rf.mu.Unlock()
 	numberOfPeers := len(rf.peers)
 	matchIndexList := make([]int, numberOfPeers)
 	for i := 0; i < numberOfPeers; i++ {
 		matchIndexList[i] = rf.matchIndex[i]
-		//log.Printf("matchIndex of server %d is %d", i, rf.matchIndex[i])
+		//log.Printf("matchIndex of matchIndex of server %d is %d", i, rf.matchIndex[i])
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(matchIndexList)))
 
@@ -984,7 +999,7 @@ func (rf *Raft) updateCommitIndex() {
 
 	//(2)
 	for j := rf.quorum - 1; j < numberOfPeers; j++ {
-		if matchIndexList[j] > rf.commitIndex && matchIndexList[j] >= rf.logStartIndex {
+		if matchIndexList[j] > rf.commitIndex && matchIndexList[j] >= rf.logStartIndex && rf.logStartIndex != rf.current_sentinel_index{
 			// (1) and (3)
 			if (rf.logs[matchIndexList[j]].Term == rf.currentTerm) {
 				//commitIndexPrev := rf.commitIndex
@@ -1019,17 +1034,20 @@ type InstallSnapshotReply struct {
 
 func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int, SnapShotByte []byte) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if (rf.role != leader_role) {
-		//log.Printf("this server %d of Term %d is no longer a leader", rf.me, rf.currentTerm)
-	}
 
-	if rf.killed() {
-		//log.Printf("this server %d of Term %d has been killed", rf.me, rf.currentTerm)
+	if (rf.role != leader_role) {
+		log.Printf("this server %d of Term %d is no longer a leader", rf.me, rf.currentTerm)
+		rf.mu.Unlock()
 		return
 	}
 
-	//log.Printf("this leader server %d of Term %d has sentinel_index %d, logStartIndex %d, logEndIndex %d, and try to trim to lastIncludeIndex %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, LastIncludedIndex)
+	if rf.killed() {
+		log.Printf("this server %d of Term %d has been killed", rf.me, rf.currentTerm)
+		rf.mu.Unlock()
+		return
+	}
+
+	log.Printf("this leader server %d of Term %d has sentinel_index %d, logStartIndex %d, logEndIndex %d, and try to trim to lastIncludeIndex %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, LastIncludedIndex)
 
 	newMap := make(map[int]*LogEntry)
 	for i := LastIncludedIndex + 1; i <= rf.logEndIndex; i++ {
@@ -1046,7 +1064,7 @@ func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int,
 		rf.logStartIndex =  rf.current_sentinel_index + 1
 	}
 
-	//log.Printf("this leader server %d of Term %d now has sentinel_index %d, logStartIndex %d, logEndIndex %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex)
+	log.Printf("this leader server %d of Term %d now has sentinel_index %d, logStartIndex %d, logEndIndex %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex)
 
 	rf.LastIncludedIndex = LastIncludedIndex
 	rf.LastIncludedTerm = LastIncludedTerm
@@ -1055,19 +1073,44 @@ func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int,
 
 	rf.persist()
 	numberOfPeers := len(rf.peers)
+	leaderIndex := rf.me
+	rf.mu.Unlock()
+
+
 	for i := 0; i < numberOfPeers; i++ {
-		if (i != rf.me) {
-			serverIndex := i
-			rf.nextIndex[serverIndex] = int(math.Max(float64(rf.nextIndex[serverIndex]), float64(LastIncludedIndex + 1)))
-			rf.matchIndex[serverIndex] = int(math.Max(float64(rf.matchIndex[serverIndex]), float64(LastIncludedIndex)))
-			//log.Printf("this leader server %d of Term %d now send snapshot to server %d", rf.me, rf.currentTerm, serverIndex)
+		serverIndex := i
+		if (serverIndex != leaderIndex) {
+
+			/*go func(rf *Raft, serverIndex int, LastIncludedIndex int, LastIncludedTerm int) {
+
+				//log.Printf("this leader server %d of Term %d now send snapshot to server %d with LastIncludeIndex %d, LastIncludeTerm %d", rf.me, rf.currentTerm, serverIndex, LastIncludedIndex, LastIncludedTerm)
+				success := rf.sendInstallSnapshotSingleServer(serverIndex)
+				if (success) {
+					log.Printf("this leader server %d of Term %d did successfully send snapshot to server %d with LastIncludeIndex %d, LastIncludeTerm %d", rf.me, rf.currentTerm, serverIndex, LastIncludedIndex, LastIncludedTerm)
+					rf.mu.Lock()
+					log.Printf("locked!")
+					rf.nextIndex[serverIndex] = int(math.Max(float64(rf.nextIndex[serverIndex]), float64(LastIncludedIndex + 1)))
+					rf.matchIndex[serverIndex] = int(math.Max(float64(rf.matchIndex[serverIndex]), float64(LastIncludedIndex)))
+					rf.mu.Unlock()
+					log.Printf("Unlocked!")
+				} else {
+					log.Printf("this leader server %d of Term %d fails to send snapshot to server %d with LastIncludeIndex %d, LastIncludeTerm %d", rf.me, rf.currentTerm, serverIndex, LastIncludedIndex, LastIncludedTerm)
+				}
+				return
+
+			}(rf, serverIndex, LastIncludedIndex, LastIncludedTerm)*/
+
 			go rf.sendInstallSnapshotSingleServer(serverIndex)
+
 		}
 	}
 }
 
-func (rf *Raft) sendInstallSnapshotSingleServer(serverIndex int) {
+
+func (rf *Raft) sendInstallSnapshotSingleServer(serverIndex int) bool{
+	
 	rf.mu.Lock()
+	log.Printf("Raft server %d start send snapshot to server %d", rf.me, serverIndex)
 	args := InstallSnapshotArgs{}
 
 	args.Term = rf.currentTerm
@@ -1080,59 +1123,39 @@ func (rf *Raft) sendInstallSnapshotSingleServer(serverIndex int) {
 
 	reply := InstallSnapshotReply{}
 	rf.mu.Unlock()
+	log.Printf("Raft server %d sent snapshot to server %d, finished init argument, now send rpc", rf.me, serverIndex)
 	receivedReply := rf.sendInstallSnapshot(serverIndex, &args, &reply)
+	log.Printf("Raft server %d sent snapshot to server %d, received rpc", rf.me, serverIndex)
+
 	rf.mu.Lock()
+	log.Printf("Raft server %d sent snapshot to server %d, received rpc, and locked", rf.me, serverIndex)
 	defer rf.mu.Unlock()
 	
 	if rf.killed() {
-		//log.Printf("this server %d of Term %d has been killed", rf.me, rf.currentTerm)
-		return
+		log.Printf("this server %d of Term %d has been killed", rf.me, rf.currentTerm)
+		return false
 	} else if rf.role != leader_role {
-		//log.Printf("this server %d of Term %d is no longer a leader", rf.me, rf.currentTerm)
-		return
+		log.Printf("this server %d of Term %d is no longer a leader", rf.me, rf.currentTerm)
+		return false
 	} else if receivedReply {
 		replyTerm := reply.Term
 		if replyTerm  > rf.currentTerm {
-			//log.Printf("this server %d of Term %d is no longer a leader, swtich to follower role with currentLeaderTerm %d and currentLeaderId %d", rf.me, rf.currentTerm, reply.Term, reply.CurrentLeaderId)
+			log.Printf("this server %d of Term %d is no longer a leader, swtich to follower role with currentLeaderTerm %d and currentLeaderId %d", rf.me, rf.currentTerm, reply.Term, reply.CurrentLeaderId)
 			rf.currentTerm = reply.Term
 			rf.role = follower_role
 			rf.currentLeaderId = reply.CurrentLeaderId
-			return
+			return false 
 		} else {
-			//log.Printf("this server %d of Term %d has successfully installed snapshot on server %d", rf.me, rf.currentTerm, serverIndex)
+			log.Printf("this server %d of Term %d has successfully installed snapshot on server %d", rf.me, rf.currentTerm, serverIndex)
+			rf.nextIndex[serverIndex] = int(math.Max(float64(rf.nextIndex[serverIndex]), float64(args.LastIncludedIndex + 1)))
+			rf.matchIndex[serverIndex] = int(math.Max(float64(rf.matchIndex[serverIndex]), float64(args.LastIncludedIndex)))
+			return true
 		}
 
 	} else {
-		//log.Printf("this server %d of Term %d did not receive reply from installSnapshot RPC on server %d", rf.me, rf.currentTerm, serverIndex)
+		log.Printf("this server %d of Term %d did not receive reply from installSnapshot RPC on server %d", rf.me, rf.currentTerm, serverIndex)
+		return false
 	}
-	
-	/*go func(serverIndex int, args *InstallSnapshotArgs, reply *InstallSnapshotReply, rf *Raft) {
-		receivedReply := rf.sendInstallSnapshot(serverIndex, args, reply)
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-
-		if rf.killed() {
-			//log.Printf("this server %d of Term %d has been killed", rf.me, rf.currentTerm)
-			return
-		} else if rf.role != leader_role {
-			//log.Printf("this server %d of Term %d is no longer a leader", rf.me, rf.currentTerm)
-			return
-		} else if receivedReply {
-			replyTerm := reply.Term
-			if replyTerm  > rf.currentTerm {
-				//log.Printf("this server %d of Term %d is no longer a leader, swtich to follower role with currentLeaderTerm %d and currentLeaderId %d", rf.me, rf.currentTerm, reply.Term, reply.CurrentLeaderId)
-				rf.currentTerm = reply.Term
-				rf.role = follower_role
-				rf.currentLeaderId = reply.CurrentLeaderId
-				return
-			} else {
-				//log.Printf("this server %d of Term %d has successfully installed snapshot on server %d", rf.me, rf.currentTerm, serverIndex)
-			}
-
-		} else {
-			//log.Printf("this server %d of Term %d did not receive reply from installSnapshot RPC on server %d", rf.me, rf.currentTerm, serverIndex)
-		}
-	}(serverIndex, &args, &reply, rf)*/
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
@@ -1268,7 +1291,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.applyMessage(applyMsg)
 
 	return
-} 
+}
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
@@ -1303,9 +1326,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := rf.logEndIndex + 1
 	term := rf.currentTerm
 	leaderId := rf.me
-	defer rf.mu.Unlock()
+	//defer rf.mu.Unlock()
 
 	if rf.killed() {
+		rf.mu.Unlock()
 		return invalid_index, invalid_term, false
 	}
 
@@ -1328,8 +1352,69 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.persist()
 		// we do not send RPC to followers immediately because we want to save band width
 		// and we shoot in every heart beat cycle to send entries to followers in batch
+
+		//numberOfPeers := len(rf.peers)
+		//leaderTerm := term
+
+		rf.mu.Unlock()
+
+		//defer rf.syncLogs(leaderId, leaderTerm, numberOfPeers)
+		
+
+
 		return index, term, true
 	} else {
+		rf.mu.Unlock()
+		return index, term, false
+	}
+
+	// Your code here (2B).
+}
+
+
+func (rf *Raft) StartQuick(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	index := rf.logEndIndex + 1
+	term := rf.currentTerm
+	leaderId := rf.me
+	//defer rf.mu.Unlock()
+
+	if rf.killed() {
+		rf.mu.Unlock()
+		return invalid_index, invalid_term, false
+	}
+
+	if rf.role == leader_role {
+		if rf.logStartIndex == rf.current_sentinel_index {
+			rf.logStartIndex = index
+		}
+		rf.matchIndex[leaderId] = index
+		rf.logEndIndex = index
+		rf.nextIndex[leaderId] = index + 1
+
+		entryToAppend := LogEntry{}
+		entryToAppend.Term = term
+		entryToAppend.Command = command
+		// Leaders 2
+		// If command received from client: append entry to local log,
+		// respond after entry applied to state machine (�5.3)
+		rf.logs[index] = &entryToAppend
+		//log.Printf("the server %d as leader(term %d) has appended new entry with index %d and term %d", leaderId, term, index, term)
+		rf.persist()
+		// we do send RPC to followers immediately because we need to pass test 3B... we need to be quick...
+
+		numberOfPeers := len(rf.peers)
+		leaderTerm := term
+
+		rf.mu.Unlock()
+
+		rf.syncLogs(leaderId, leaderTerm, numberOfPeers)
+
+		rf.syncCommitIndex(leaderId, leaderTerm, numberOfPeers)
+	
+		return index, term, true
+	} else {
+		rf.mu.Unlock()
 		return index, term, false
 	}
 
@@ -1440,6 +1525,230 @@ func (rf *Raft) initLeader() {
 	}
 }
 
+func (rf *Raft) syncCommitIndex(leaderId int, leaderTerm int, numberOfPeers int) {
+
+	rf.mu.Lock()
+	rf.timeLastHeartBeatInit = time.Now()
+	leaderCommitIndex := rf.commitIndex
+	leaderLastIncludeIndex := rf.LastIncludedIndex
+	rf.mu.Unlock()
+
+	for i := 0; i < numberOfPeers; i++ {
+		serverIndex := i
+		if serverIndex != leaderId {
+			go func(serverIndex int, leaderTerm int, leaderId int, leaderCommitIndex int, leaderLastIncludeIndex int, rf *Raft) {
+				args := AppendEntriesArgs{}
+	
+				args.Term = leaderTerm
+				args.LeaderId = leaderId
+				args.LeaderCommit = leaderCommitIndex
+	
+				args.EmptyRPC = true
+				//time.Sleep(time.Duration(leader_heartbeat_millisecond) * time.Millisecond)
+				args.LeaderLastIncludeIndex = leaderLastIncludeIndex
+				reply := AppendEntriesReply{}
+				//log.Printf("this server %d as leader (term %d) send heart beat to %d", leaderId, leaderTerm, serverIndex)
+				
+				receivedReply := rf.sendAppendEntries(serverIndex, &args, &reply)
+				
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+	
+				if rf.role != leader_role {
+					rf.role = follower_role
+					//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode", rf.me, leaderTerm)
+				} else if rf.killed() {
+					if rf.killedMessagePrinted == 0 {
+						rf.killedMessagePrinted = 1
+						//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
+					}
+				
+				} else if receivedReply {
+					if reply.Term > leaderTerm {
+						rf.currentTerm = reply.Term
+						rf.role = follower_role
+						rf.votedFor = not_voted
+						rf.currentLeaderId = reply.CurrentLeaderId
+						rf.persist()
+						//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", rf.me, leaderTerm, reply.Term, serverIndex)
+					} else {
+						if (reply.NeedSnapShot) {
+							//log.Printf("need to send snapshot to server %d", serverIndex)
+							rf.mu.Unlock()
+							rf.sendInstallSnapshotSingleServer(serverIndex)
+							rf.mu.Lock()
+						}
+						//log.Printf("this server %d as leader (term %d) received heart beat reply from server %d and remain a leader", rf.me, leaderTerm, serverIndex)
+					}
+				}
+			}(serverIndex, leaderTerm, leaderId, leaderCommitIndex, leaderLastIncludeIndex, rf)	
+		}
+	}
+}
+
+func (rf *Raft) syncLogs(leaderId int, leaderTerm int, numberOfPeers int) {
+
+	rf.mu.Lock()
+	rf.timeLastHeartBeatInit = time.Now()
+	rf.mu.Unlock()
+
+	for i := 0; i < numberOfPeers; i++ {
+		serverIndex := i
+		if serverIndex != leaderId {
+			// Leaders 1
+			//• Upon election: send initial empty AppendEntries RPCs
+			//	(heartbeat) to each server; repeat during idle periods to
+			//	prevent election timeouts (§5.2)
+				
+			rf.mu.Lock()
+			
+			if rf.role != leader_role {
+				//log.Printf("this server %d as leader (term %d) is no longer a leader", rf.me, leaderTerm)
+				rf.persist()
+				defer rf.mu.Unlock()
+			
+				return
+			
+			}
+			
+			if rf.killed() {
+				if rf.killedMessagePrinted == 0 {
+					rf.killedMessagePrinted = 1
+					//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
+				}
+				rf.persist()
+				defer rf.mu.Unlock()
+			
+				return
+			}
+		
+			leaderCommitIndex := rf.commitIndex
+
+			serverNextIndex := rf.nextIndex[serverIndex]
+			//log.Printf("serverNextIndex for server %d is %d", serverIndex, serverNextIndex)
+
+			//add on
+			serverMatchIndex := rf.matchIndex[serverIndex]
+			//log.Printf("serverMatchIndex for server %d is %d", serverIndex, serverMatchIndex)
+			//add on
+			prevLogIndex := rf.current_sentinel_index
+			prevLogTerm := default_start_term
+			//log.Printf("the server %d as leader of term %d has been sentinel_index %d, logStartIndex %d, and logEndIndex %d, LastIncludeIndex %d, LastIncludeTerm %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, rf.LastIncludedIndex, rf.LastIncludedTerm)
+			if serverNextIndex - 1 > rf.current_sentinel_index {
+				prevLogIndex = serverNextIndex - 1
+				prevLogTerm = (rf.logs[serverNextIndex - 1]).Term
+			}
+			leaderLogEndIndex := rf.logEndIndex
+
+			leaderLastIncludeIndex := rf.LastIncludedIndex
+			rf.mu.Unlock()
+
+			//if leaderLogEndIndex < serverNextIndex 
+			if leaderLogEndIndex < serverNextIndex && serverMatchIndex >= leaderLogEndIndex{
+				//log.Printf("send empty, nothing to match")
+				go func(serverIndex int, leaderTerm int, leaderId int, leaderCommitIndex int, leaderLastIncludeIndex int, rf *Raft) {
+					args := AppendEntriesArgs{}
+
+					args.Term = leaderTerm
+					args.LeaderId = leaderId
+					args.LeaderCommit = leaderCommitIndex
+
+					args.EmptyRPC = true
+					//time.Sleep(time.Duration(leader_heartbeat_millisecond) * time.Millisecond)
+					args.LeaderLastIncludeIndex = leaderLastIncludeIndex
+					reply := AppendEntriesReply{}
+					//log.Printf("this server %d as leader (term %d) send heart beat to %d", leaderId, leaderTerm, serverIndex)
+					
+					receivedReply := rf.sendAppendEntries(serverIndex, &args, &reply)
+					
+					rf.mu.Lock()
+					defer rf.mu.Unlock()
+
+					if rf.role != leader_role {
+						rf.role = follower_role
+						//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode", rf.me, leaderTerm)
+					} else if rf.killed() {
+						if rf.killedMessagePrinted == 0 {
+							rf.killedMessagePrinted = 1
+							//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
+						}
+					
+					} else if receivedReply {
+						if reply.Term > leaderTerm {
+							rf.currentTerm = reply.Term
+							rf.role = follower_role
+							rf.votedFor = not_voted
+							rf.currentLeaderId = reply.CurrentLeaderId
+							rf.persist()
+							//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", rf.me, leaderTerm, reply.Term, serverIndex)
+						} else {
+							if (reply.NeedSnapShot) {
+								//log.Printf("need to send snapshot to server %d", serverIndex)
+								rf.mu.Unlock()
+								rf.sendInstallSnapshotSingleServer(serverIndex)
+								rf.mu.Lock()
+							}
+							//log.Printf("this server %d as leader (term %d) received heart beat reply from server %d and remain a leader", rf.me, leaderTerm, serverIndex)
+						}	
+					} else {
+						//log.Printf("this server %d as leader (term %d) does not received heart beat reply from server %d within election timeout", rf.me, leaderTerm, serverIndex)
+					}
+					
+					return
+				}(serverIndex, leaderTerm, leaderId, leaderCommitIndex, leaderLastIncludeIndex, rf)
+			} else {
+				//log.Printf("try to match")
+				go func(serverIndex int, term int, leaderId int, prevLogIndex int, prevLogTerm int, leaderCommitIndex int, leaderLogEndIndex int, leaderLastIncludeIndex int, rf *Raft) {
+					serverTerm, currentMatchedIndex, isLeader := rf.obtainMatchIndex(serverIndex, term, leaderId, prevLogIndex, prevLogTerm, leaderLogEndIndex, leaderCommitIndex, leaderLastIncludeIndex)
+					rf.mu.Lock()
+					defer rf.mu.Unlock()
+					if !isLeader {
+						rf.currentTerm = int(math.Max(float64(serverTerm), float64(rf.currentTerm)))
+						rf.role = follower_role
+					
+						rf.persist()
+						//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode of term %d", rf.me, leaderTerm, rf.currentTerm)
+					} else if rf.killed() {
+						if rf.killedMessagePrinted == 0 {
+							rf.killedMessagePrinted = 1
+							//log.Printf("the server %d as leader of term %d has been killed...", rf.me, term)
+						}	
+					} else if currentMatchedIndex == invalid_index {
+						//log.Printf("this server %d as leader (term %d) did not find matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d for some reason, maybe network disconnection, return invalid_index", leaderId, term, leaderLogEndIndex, serverIndex, prevLogIndex, prevLogTerm)
+					} else {
+						//log.Printf("this server %d as leader (term %d) has found matched index, which is %d, for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, now try to append", leaderId, term, currentMatchedIndex, leaderLogEndIndex, serverIndex, prevLogIndex, prevLogTerm)
+						rf.mu.Unlock()
+						serverTerm, appendSuccessful, isLeader := rf.appendNewEntriesFromMatchedIndex(serverIndex, term, leaderId, currentMatchedIndex + 1, leaderLogEndIndex, leaderCommitIndex, leaderLastIncludeIndex)
+						rf.mu.Lock()
+						if !isLeader {
+							rf.currentTerm = int(math.Max(float64(serverTerm), float64(rf.currentTerm)))
+							rf.role = follower_role
+			
+							rf.persist()
+							//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode", rf.me, leaderTerm)
+						} else if rf.killed(){
+							if rf.killedMessagePrinted == 0 {
+								rf.killedMessagePrinted = 1
+								//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
+							}
+						} else if !appendSuccessful {
+							//log.Printf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d may be due to network disconnection, retry in next heartBeat cycle", leaderId, term, serverIndex, currentMatchedIndex + 1, leaderLogEndIndex)
+						} else	{
+							//log.Printf("this server %d as leader (term %d) successfully appends log to follower %d from entriesStart %d to entriesEnd %d", leaderId, term, serverIndex, currentMatchedIndex + 1, leaderLogEndIndex)
+						}
+					}
+					
+					return
+				}(serverIndex, leaderTerm, leaderId, prevLogIndex, prevLogTerm, leaderCommitIndex, leaderLogEndIndex, leaderLastIncludeIndex, rf)
+			}
+		}
+	}
+
+
+
+	rf.updateCommitIndex()
+}
+
 func (rf *Raft) actAsLeader() {
 	rf.mu.Lock()
 	if rf.killed(){
@@ -1458,151 +1767,191 @@ func (rf *Raft) actAsLeader() {
 	rf.currentLeaderId = rf.me
 
 	rf.persist()
+
+	rf.timeLastHeartBeatInit = time.Now()
 	rf.mu.Unlock()
 	for {
-		for i := 0; i < numberOfPeers; i++ {
-			serverIndex := i
-			if serverIndex != leaderId {
-				// Leaders 1
-				//• Upon election: send initial empty AppendEntries RPCs
-				//	(heartbeat) to each server; repeat during idle periods to
-				//	prevent election timeouts (§5.2)
+
+		rf.mu.Lock()
+
+		timeLastHeartBeatInitLeader := rf.timeLastHeartBeatInit
+
+	
+		timeToCheck := (timeLastHeartBeatInitLeader).Add(time.Duration(leader_heartbeat_millisecond) * time.Millisecond)	
+		needHeartBeat := false
+		currentTime := time.Now()
+
+		if (currentTime.After(timeToCheck)) {
+			needHeartBeat = true
+			rf.timeLastHeartBeatInit = currentTime
+		}
+		rf.mu.Unlock()
+
+		
+
+		if (needHeartBeat) {
+
+			for i := 0; i < numberOfPeers; i++ {
+				serverIndex := i
+				if serverIndex != leaderId {
+					// Leaders 1
+					//• Upon election: send initial empty AppendEntries RPCs
+					//	(heartbeat) to each server; repeat during idle periods to
+					//	prevent election timeouts (§5.2)
+						
+					rf.mu.Lock()
 					
-				rf.mu.Lock()
-				
-				if rf.role != leader_role {
-					//log.Printf("this server %d as leader (term %d) is no longer a leader", rf.me, leaderTerm)
-					rf.persist()
-					defer rf.mu.Unlock()
-					return
-				
-				}
-				
-				if rf.killed() {
-					if rf.killedMessagePrinted == 0 {
-						rf.killedMessagePrinted = 1
-						//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
-					}
-					rf.persist()
-					defer rf.mu.Unlock()
-					return
-				}
-			
-				leaderCommitIndex := rf.commitIndex
-
-				serverNextIndex := rf.nextIndex[serverIndex]
-				//log.Printf("serverNextIndex for server %d is %d", serverIndex, serverNextIndex)
-				prevLogIndex := rf.current_sentinel_index
-				prevLogTerm := default_start_term
-				//log.Printf("the server %d as leader of term %d has been sentinel_index %d, logStartIndex %d, and logEndIndex %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex)
-				if serverNextIndex - 1 > rf.current_sentinel_index {
-					prevLogIndex = serverNextIndex - 1
-					prevLogTerm = (rf.logs[serverNextIndex - 1]).Term
-				}
-				leaderLogEndIndex := rf.logEndIndex
-
-				leaderLastIncludeIndex := rf.LastIncludedIndex
-				rf.mu.Unlock()
-
-				if leaderLogEndIndex < serverNextIndex {
-					//log.Printf("send empty, nothing to match")
-					go func(serverIndex int, leaderTerm int, leaderId int, leaderCommitIndex int, leaderLastIncludeIndex int, rf *Raft) {
-						args := AppendEntriesArgs{}
-	
-						args.Term = leaderTerm
-						args.LeaderId = leaderId
-						args.LeaderCommit = leaderCommitIndex
-	
-						args.EmptyRPC = true
-						//time.Sleep(time.Duration(leader_heartbeat_millisecond) * time.Millisecond)
-						args.LeaderLastIncludeIndex = leaderLastIncludeIndex
-						reply := AppendEntriesReply{}
-						//log.Printf("this server %d as leader (term %d) send heart beat to %d", leaderId, leaderTerm, serverIndex)
-						
-						receivedReply := rf.sendAppendEntries(serverIndex, &args, &reply)
-						
-						rf.mu.Lock()
+					if rf.role != leader_role {
+						//log.Printf("this server %d as leader (term %d) is no longer a leader", rf.me, leaderTerm)
+						rf.persist()
 						defer rf.mu.Unlock()
-	
-						if rf.role != leader_role {
-							rf.role = follower_role
-							//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode", rf.me, leaderTerm)
-						} else if rf.killed() {
-							if rf.killedMessagePrinted == 0 {
-								rf.killedMessagePrinted = 1
-								//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
-							}
-						
-						} else if receivedReply {
-							if reply.Term > leaderTerm {
-								rf.currentTerm = reply.Term
-								rf.role = follower_role
-								rf.votedFor = not_voted
-								rf.currentLeaderId = reply.CurrentLeaderId
-								rf.persist()
-								//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", rf.me, leaderTerm, reply.Term, serverIndex)
-							} else {
-								if (reply.NeedSnapShot) {
-									//log.Printf("need to send snapshot to server %d", serverIndex)
-									rf.mu.Unlock()
-									rf.sendInstallSnapshotSingleServer(serverIndex)
-									rf.mu.Lock()
-								}
-								//log.Printf("this server %d as leader (term %d) received heart beat reply from server %d and remain a leader", rf.me, leaderTerm, serverIndex)
-							}	
-						} else {
-							//log.Printf("this server %d as leader (term %d) does not received heart beat reply from server %d within election timeout", rf.me, leaderTerm, serverIndex)
-						}
+		
 						return
-					}(serverIndex, leaderTerm, leaderId, leaderCommitIndex, leaderLastIncludeIndex, rf)
-				} else {
-					//log.Printf("try to match")
-					go func(serverIndex int, term int, leaderId int, prevLogIndex int, prevLogTerm int, leaderCommitIndex int, leaderLogEndIndex int, leaderLastIncludeIndex int, rf *Raft) {
-						serverTerm, currentMatchedIndex, isLeader := rf.obtainMatchIndex(serverIndex, term, leaderId, prevLogIndex, prevLogTerm, leaderLogEndIndex, leaderCommitIndex, leaderLastIncludeIndex)
-						rf.mu.Lock()
+					
+					}
+					
+					if rf.killed() {
+						if rf.killedMessagePrinted == 0 {
+							rf.killedMessagePrinted = 1
+							//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
+						}
+						rf.persist()
 						defer rf.mu.Unlock()
-						if !isLeader {
-							rf.currentTerm = int(math.Max(float64(serverTerm), float64(rf.currentTerm)))
-							rf.role = follower_role
-						
-							rf.persist()
-							//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode of term %d", rf.me, leaderTerm, rf.currentTerm)
-						} else if rf.killed() {
-							if rf.killedMessagePrinted == 0 {
-								rf.killedMessagePrinted = 1
-								//log.Printf("the server %d as leader of term %d has been killed...", rf.me, term)
-							}	
-						} else if currentMatchedIndex == invalid_index {
-							//log.Printf("this server %d as leader (term %d) did not find matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d for some reason, maybe network disconnection, return invalid_index", leaderId, term, leaderLogEndIndex, serverIndex, prevLogIndex, prevLogTerm)
-						} else {
-							//log.Printf("this server %d as leader (term %d) has found matched index, which is %d, for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, now try to append", leaderId, term, currentMatchedIndex, leaderLogEndIndex, serverIndex, prevLogIndex, prevLogTerm)
-							rf.mu.Unlock()
-							serverTerm, appendSuccessful, isLeader := rf.appendNewEntriesFromMatchedIndex(serverIndex, term, leaderId, currentMatchedIndex + 1, leaderLogEndIndex, leaderCommitIndex, leaderLastIncludeIndex)
-							rf.mu.Lock()
-							if !isLeader {
-								rf.currentTerm = int(math.Max(float64(serverTerm), float64(rf.currentTerm)))
-								rf.role = follower_role
+			
+						return
+					}
 				
-								rf.persist()
+					leaderCommitIndex := rf.commitIndex
+		
+					serverNextIndex := rf.nextIndex[serverIndex]
+					//log.Printf("serverNextIndex for server %d is %d", serverIndex, serverNextIndex)
+
+					//add on
+					serverMatchIndex := rf.matchIndex[serverIndex]
+					//log.Printf("serverMatchIndex for server %d is %d", serverIndex, serverMatchIndex)
+					//add on
+
+					
+					prevLogIndex := rf.current_sentinel_index
+					prevLogTerm := default_start_term
+					//log.Printf("the server %d as leader of term %d has been sentinel_index %d, logStartIndex %d, and logEndIndex %d, LastIncludeIndex %d, LastIncludeTerm %d", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, rf.LastIncludedIndex, rf.LastIncludedTerm)
+					if serverNextIndex - 1 > rf.current_sentinel_index {
+						prevLogIndex = serverNextIndex - 1
+						prevLogTerm = (rf.logs[serverNextIndex - 1]).Term
+					}
+					leaderLogEndIndex := rf.logEndIndex
+		
+					leaderLastIncludeIndex := rf.LastIncludedIndex
+					rf.mu.Unlock()
+					// if leaderLogEndIndex < serverNextIndex (leader h)
+					if leaderLogEndIndex < serverNextIndex && serverMatchIndex >= leaderLogEndIndex{
+						//log.Printf("send empty, nothing to match")
+						go func(serverIndex int, leaderTerm int, leaderId int, leaderCommitIndex int, leaderLastIncludeIndex int, rf *Raft) {
+							args := AppendEntriesArgs{}
+		
+							args.Term = leaderTerm
+							args.LeaderId = leaderId
+							args.LeaderCommit = leaderCommitIndex
+		
+							args.EmptyRPC = true
+							//time.Sleep(time.Duration(leader_heartbeat_millisecond) * time.Millisecond)
+							args.LeaderLastIncludeIndex = leaderLastIncludeIndex
+							reply := AppendEntriesReply{}
+							//log.Printf("this server %d as leader (term %d) send heart beat to %d", leaderId, leaderTerm, serverIndex)
+							
+							receivedReply := rf.sendAppendEntries(serverIndex, &args, &reply)
+							rf.mu.Lock()
+							defer rf.mu.Unlock()
+							if rf.role != leader_role {
+								rf.role = follower_role
 								//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode", rf.me, leaderTerm)
-							} else if rf.killed(){
+							} else if rf.killed() {
 								if rf.killedMessagePrinted == 0 {
 									rf.killedMessagePrinted = 1
 									//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
 								}
-							} else if !appendSuccessful {
-								//log.Printf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d may be due to network disconnection, retry in next heartBeat cycle", leaderId, term, serverIndex, currentMatchedIndex + 1, leaderLogEndIndex)
-							} else	{
-								//log.Printf("this server %d as leader (term %d) successfully appends log to follower %d from entriesStart %d to entriesEnd %d", leaderId, term, serverIndex, currentMatchedIndex + 1, leaderLogEndIndex)
+							
+							} else if receivedReply {
+								if reply.Term > leaderTerm {
+									rf.currentTerm = reply.Term
+									rf.role = follower_role
+									rf.votedFor = not_voted
+									rf.currentLeaderId = reply.CurrentLeaderId
+									rf.persist()
+									//log.Printf("this server %d as leader (term %d) received higher term %d from server %d, switch to follower mode", rf.me, leaderTerm, reply.Term, serverIndex)
+								} else {
+									if (reply.NeedSnapShot) {
+										//log.Printf("need to send snapshot to server %d", serverIndex)
+										rf.mu.Unlock()
+										rf.sendInstallSnapshotSingleServer(serverIndex)
+										rf.mu.Lock()
+									}
+									//log.Printf("this server %d as leader (term %d) received heart beat reply from server %d and remain a leader", rf.me, leaderTerm, serverIndex)
+								}	
+							} else {
+								//log.Printf("this server %d as leader (term %d) does not received heart beat reply from server %d within election timeout", rf.me, leaderTerm, serverIndex)
 							}
-						}
-						return
-					}(serverIndex, leaderTerm, leaderId, prevLogIndex, prevLogTerm, leaderCommitIndex, leaderLogEndIndex, leaderLastIncludeIndex, rf)
+						
+							return
+						}(serverIndex, leaderTerm, leaderId, leaderCommitIndex, leaderLastIncludeIndex, rf)
+					} else {
+						//log.Printf("try to match")
+						go func(serverIndex int, term int, leaderId int, prevLogIndex int, prevLogTerm int, leaderCommitIndex int, leaderLogEndIndex int, leaderLastIncludeIndex int, rf *Raft) {
+							serverTerm, currentMatchedIndex, isLeader := rf.obtainMatchIndex(serverIndex, term, leaderId, prevLogIndex, prevLogTerm, leaderLogEndIndex, leaderCommitIndex, leaderLastIncludeIndex)
+							rf.mu.Lock()
+							defer rf.mu.Unlock()
+							if !isLeader {
+								rf.currentTerm = int(math.Max(float64(serverTerm), float64(rf.currentTerm)))
+								rf.role = follower_role
+							
+								rf.persist()
+								//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode of term %d", rf.me, leaderTerm, rf.currentTerm)
+							} else if rf.killed() {
+								if rf.killedMessagePrinted == 0 {
+									rf.killedMessagePrinted = 1
+									//log.Printf("the server %d as leader of term %d has been killed...", rf.me, term)
+								}	
+							} else if currentMatchedIndex == invalid_index {
+								//log.Printf("this server %d as leader (term %d) did not find matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d for some reason, maybe network disconnection, return invalid_index", leaderId, term, leaderLogEndIndex, serverIndex, prevLogIndex, prevLogTerm)
+							} else {
+								//log.Printf("this server %d as leader (term %d) has found matched index, which is %d, for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, now try to append", leaderId, term, currentMatchedIndex, leaderLogEndIndex, serverIndex, prevLogIndex, prevLogTerm)
+								rf.mu.Unlock()
+								serverTerm, appendSuccessful, isLeader := rf.appendNewEntriesFromMatchedIndex(serverIndex, term, leaderId, currentMatchedIndex + 1, leaderLogEndIndex, leaderCommitIndex, leaderLastIncludeIndex)
+								rf.mu.Lock()
+								if !isLeader {
+									rf.currentTerm = int(math.Max(float64(serverTerm), float64(rf.currentTerm)))
+									rf.role = follower_role
+					
+									rf.persist()
+									//log.Printf("this server %d as leader (term %d) is no longer a leader, switch to follower mode", rf.me, leaderTerm)
+								} else if rf.killed(){
+									if rf.killedMessagePrinted == 0 {
+										rf.killedMessagePrinted = 1
+										//log.Printf("the server %d as leader of term %d has been killed...", rf.me, rf.currentTerm)
+									}
+								} else if !appendSuccessful {
+									//log.Printf("this server %d as leader (term %d) did not successfully append log to follower %d from entriesStart %d to entriesEnd %d may be due to network disconnection, retry in next heartBeat cycle", leaderId, term, serverIndex, currentMatchedIndex + 1, leaderLogEndIndex)
+								} else	{
+									//log.Printf("this server %d as leader (term %d) successfully appends log to follower %d from entriesStart %d to entriesEnd %d", leaderId, term, serverIndex, currentMatchedIndex + 1, leaderLogEndIndex)
+								}
+							}
+						
+							return
+						}(serverIndex, leaderTerm, leaderId, prevLogIndex, prevLogTerm, leaderCommitIndex, leaderLogEndIndex, leaderLastIncludeIndex, rf)
+					}
 				}
 			}
+
+
+			rf.updateCommitIndex()
+			time.Sleep(time.Duration(leader_heartbeat_wait_millisecond) * time.Millisecond)
+
+		} else {
+			time.Sleep(time.Duration(leader_heartbeat_wait_millisecond) * time.Millisecond)
 		}
-		rf.updateCommitIndex()
-		time.Sleep(time.Duration(leader_heartbeat_millisecond) * time.Millisecond)
+		
+		//rf.syncLogs(leaderId, leaderTerm, numberOfPeers)
+		
 	}
 }
 
