@@ -104,7 +104,39 @@ func (ck *Clerk) Get(key string) string {
 
 		ck.RPC_Count = ck.RPC_Count + 1
 		//log.Printf("RPC sent by clerk %d is %d, to %d", ck.Client_Serial_Number, ck.RPC_Count, leaderId)
+
 		ok := ck.servers[leaderId].Call("KVServer.Get", &args, &reply)
+
+
+		/*ok := false
+		okPtr := &ok
+
+		gotReply := false
+		gotReplyPtr := &gotReply
+
+		sendTime := time.Now()
+		timeToCheck := (sendTime).Add(time.Duration(client_wait_time_millisecond) * time.Millisecond)	
+		go func(gotReplyPtr *bool, okPtr *bool, args GetArgs, reply GetReply) {
+			wtf := ck.servers[leaderId].Call("KVServer.Get", &args, &reply)
+			*gotReplyPtr = true
+
+			okPtr = &wtf
+		}(gotReplyPtr, okPtr, args, reply)
+
+		currentTime := time.Now()
+		for !(*gotReplyPtr) && !(currentTime.After(timeToCheck)) {
+			currentTime = time.Now()
+			time.Sleep(time.Duration(client_wait_time_loop_millisecond) * time.Millisecond)
+		}
+
+		if !(*gotReplyPtr) {
+			//log.Printf("did not receive reply from server with id %d of term %d, for client %d Get request with key %s and sequence number %d is unsuccessful possibily due to network partition, retry with same server", leaderId, ck.currentLeaderTerm, args.Client_Serial_Number, key, args.Sequence_Number)
+			ck.currentLeaderId = invalid_leader
+			continue
+		}
+
+		ok = *okPtr*/
+
 		//log.Printf("clerk %d received response from %d", ck.Client_Serial_Number, leaderId)
 		if ok {
 			err := reply.Err
@@ -204,6 +236,37 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		//log.Printf("RPC sent by clerk %d is %d, to %d", ck.Client_Serial_Number, ck.RPC_Count, leaderId)
 
 		ok := ck.servers[leaderId].Call("KVServer.PutAppend", &args, &reply)
+
+		/*ok := false
+		okPtr := &ok
+
+		gotReply := false
+		gotReplyPtr := &gotReply
+
+		sendTime := time.Now()
+		timeToCheck := (sendTime).Add(time.Duration(client_wait_time_millisecond) * time.Millisecond)	
+		go func(gotReplyPtr *bool, okPtr *bool, args PutAppendArgs, reply PutAppendReply) {
+			wtf := ck.servers[leaderId].Call("KVServer.PutAppend", &args, &reply)
+			*gotReplyPtr = true
+
+			okPtr = &wtf
+		}(gotReplyPtr, okPtr, args, reply)
+
+		currentTime := time.Now()
+		for !(*gotReplyPtr) && !(currentTime.After(timeToCheck)) {
+			currentTime = time.Now()
+			time.Sleep(time.Duration(client_wait_time_loop_millisecond) * time.Millisecond)
+		}
+
+		if !(*gotReplyPtr) {
+			//log.Printf("did not receive reply from server with id %d of term %d, for client %d Get request with key %s and sequence number %d is unsuccessful possibily due to network partition, retry with same server", leaderId, ck.currentLeaderTerm, args.Client_Serial_Number, key, args.Sequence_Number)
+			ck.currentLeaderId = invalid_leader
+			continue
+		}
+
+		ok = *okPtr*/
+
+
 		//log.Printf("clerk %d received response from %d", ck.Client_Serial_Number, leaderId)
 		if ok {
 			err := reply.Err
