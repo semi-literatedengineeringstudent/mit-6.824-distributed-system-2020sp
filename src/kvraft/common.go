@@ -5,12 +5,19 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
 
-	Get            = "Get" // on existiing key, return most recent value, on non-existing key, return ErrNoKey
-	Put            = "Put" // on existing key or non-existing key, replace
-	Append         = "Append" // on existing key, concatenate, on non-existing key, act like put
+	ErrServerKilled  = "ErrServerKilled"
+
+	ErrAlreadyReceived = "ErrAlreadyReceived"
 )
 
-type Err string
+//type Err string
+
+type DeletePrevRequestArgs struct {
+	PrevRequests []int64
+}
+type DeletePrevRequestReply struct {
+	Err string
+}
 
 // Put or Append
 type PutAppendArgs struct {
@@ -21,21 +28,37 @@ type PutAppendArgs struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 
-	Serial_Number int64
+	Client_Serial_Number int64
+
+	Received_Sequence_Number int
+	Sequence_Number int
 }
 
 type PutAppendReply struct {
-	Err Err
+	Err string
+
+	CurrentLeaderId int
+	CurrentLeaderTerm int
+
+	ServerRole int
 }
 
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
 
-	Serial_Number int64
+	Client_Serial_Number int64
+
+	Received_Sequence_Number int
+	Sequence_Number int
 }
 
 type GetReply struct {
-	Err   Err
+	Err   string
 	Value string
+
+	CurrentLeaderId int
+	CurrentLeaderTerm int
+
+	ServerRole int
 }
