@@ -208,11 +208,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			opToRaft.Key = key
 			opToRaft.Operation = "Get"
 
-			kv.mu.Unlock()
+			//kv.mu.Unlock()
 			//_, _, isLeader := kv.rf.Start(opToRaft)
 			currentLeaderId, index, term, isLeader := kv.rf.StartQuick(opToRaft)
 
-			kv.mu.Lock()
+			//kv.mu.Lock()
 			if index == invalid_index {
 				reply.Err = ErrServerKilled
 				return
@@ -390,11 +390,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			opToRaft.Value = value
 			opToRaft.Operation = op
 
-			kv.mu.Unlock()
+			//kv.mu.Unlock()
 			//_, _, isLeader := kv.rf.Start(opToRaft)
 			currentLeaderId, index, term, isLeader := kv.rf.StartQuick(opToRaft)
 
-			kv.mu.Lock()
+			//kv.mu.Lock()
 			if index == invalid_index {
 				reply.Err = ErrServerKilled
 				return

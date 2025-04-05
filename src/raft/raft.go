@@ -1741,7 +1741,7 @@ func (rf *Raft) syncLogs(leaderId int, leaderTerm int, numberOfPeers int) {
 					return
 				}(serverIndex, leaderTerm, leaderId, leaderCommitIndex, leaderLastIncludeIndex, rf)
 			} else {
-				//log.Printf("try to match")
+				//log.Printf("try to match server %d", serverIndex)
 				go func(serverIndex int, term int, leaderId int, prevLogIndex int, prevLogTerm int, leaderCommitIndex int, leaderLogEndIndex int, leaderLastIncludeIndex int, rf *Raft) {
 					serverTerm, currentMatchedIndex, isLeader := rf.obtainMatchIndex(serverIndex, term, leaderId, prevLogIndex, prevLogTerm, leaderLogEndIndex, leaderCommitIndex, leaderLastIncludeIndex)
 					rf.mu.Lock()
@@ -1939,7 +1939,7 @@ func (rf *Raft) actAsLeader() {
 							return
 						}(serverIndex, leaderTerm, leaderId, leaderCommitIndex, leaderLastIncludeIndex, rf)
 					} else {
-						//log.Printf("try to match")
+						//log.Printf("try to match server %d", serverIndex)
 						go func(serverIndex int, term int, leaderId int, prevLogIndex int, prevLogTerm int, leaderCommitIndex int, leaderLogEndIndex int, leaderLastIncludeIndex int, rf *Raft) {
 							serverTerm, currentMatchedIndex, isLeader := rf.obtainMatchIndex(serverIndex, term, leaderId, prevLogIndex, prevLogTerm, leaderLogEndIndex, leaderCommitIndex, leaderLastIncludeIndex)
 							rf.mu.Lock()

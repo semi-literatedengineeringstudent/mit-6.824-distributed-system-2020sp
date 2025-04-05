@@ -5,8 +5,8 @@ import "crypto/rand"
 import "math/big"
 
 //import "log"
-
-import "time"
+import "math"
+//import "time"
 
 
 type Clerk struct {
@@ -161,7 +161,7 @@ func (ck *Clerk) Get(key string) string {
 					role = "leader"
 				}*/
 				
-				if (reply.CurrentLeaderTerm > ck.currentLeaderTerm) {
+				/*if (reply.CurrentLeaderTerm > ck.currentLeaderTerm) {
 					//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId,  ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 					ck.currentLeaderId = reply.CurrentLeaderId
 					ck.currentLeaderTerm = reply.CurrentLeaderTerm
@@ -184,7 +184,10 @@ func (ck *Clerk) Get(key string) string {
 				} else {
 					//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, and it provides a leader of lower term, retry with random server", leaderId, ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number)
 					ck.currentLeaderId = invalid_leader
-				}
+				}*/
+				ck.currentLeaderTerm = int(math.Max(float64(reply.CurrentLeaderTerm), float64(ck.currentLeaderTerm)))
+				ck.currentLeaderId = invalid_leader
+				//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, retry with random server", leaderId, reply.CurrentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number)
 			}
 		} else {
 			//log.Printf("did not receive reply from server with id %d of term %d, for client %d Get request with key %s and sequence number %d is unsuccessful possibily due to network partition, retry with same server", leaderId, ck.currentLeaderTerm, args.Client_Serial_Number, key, args.Sequence_Number)
@@ -287,7 +290,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					role = "leader"
 				}*/
 				
-				if (reply.CurrentLeaderTerm > ck.currentLeaderTerm) {
+				/*if (reply.CurrentLeaderTerm > ck.currentLeaderTerm) {
 					//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, retry with new leader server of id %d and term %d",leaderId,  ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number, reply.CurrentLeaderId, reply.CurrentLeaderTerm)
 					ck.currentLeaderId = reply.CurrentLeaderId
 					ck.currentLeaderTerm = reply.CurrentLeaderTerm
@@ -310,7 +313,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				} else {
 					//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, and it provides a leader of lower term, retry with random server", leaderId, ck.currentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number)
 					ck.currentLeaderId = invalid_leader
-				}
+				}*/
+				ck.currentLeaderTerm = int(math.Max(float64(reply.CurrentLeaderTerm), float64(ck.currentLeaderTerm)))
+				ck.currentLeaderId = invalid_leader
+				//log.Printf("server with id %d of term %d has been lost leadership/or is not leader, role is %s, for client %d Get request with key %s and sequence number %d is unsuccessful, retry with random server", leaderId, reply.CurrentLeaderTerm, role, args.Client_Serial_Number, key, args.Sequence_Number)
+				
 			}
 		} else {
 			//log.Printf("did not receive reply from server with id %d of term %d, for client %d, %s request with (key %s, value %s) and sequence number %d is unsuccessful, retry with random server",leaderId,  ck.currentLeaderTerm, ck.Client_Serial_Number, op, key, value, args.Sequence_Number)
