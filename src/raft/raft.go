@@ -834,7 +834,7 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 					// decrement nextIndex and retry (�5.3)
 
 					//log.Printf("this server %d as leader (term %d) fail to replicate log at index %d with server %d with prevLogIndex %d and prevLogTerm %d, initiate retry with decrement", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
-					
+				
 					if (reply.NeedSnapShot) {
 						//log.Printf("Raft server %d obtainMatchIndex() send snapshot Unlocked", rf.me)
 						rf.mu.Unlock()
@@ -858,48 +858,62 @@ func (rf *Raft) obtainMatchIndex(serverIndex int, term int, leaderId int, prevLo
 							leaderCommit = rf.commitIndex
 							leaderLastIncludeIndex = rf.LastIncludedIndex
 						}
-					} else if rf.logs[reply.XIndex].Term != reply.XTerm {
-						// case 1 where leader simply misses entire terms of entries in follower(XTerm is the first index of entry in conflicing term), 
-						// the leader simply start appending from XIndex to alter all follower entries from that diverging XIndex
-						
-						rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(reply.XIndex)))
-						
-						// since follower does not agree with leader on the term on the XIndex where follower has its first entry 
-						// corresponding to that term, we cans simply try start appending from XIndex
-						// since it is a known inconsistency
-						
-						prevLogIndexRpc = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndexRpc - 1)))
-						prevLogTermRpc = default_start_term
-						if prevLogIndexRpc > rf.current_sentinel_index{
-							prevLogTermRpc= rf.logs[prevLogIndexRpc].Term
-						} else {
-							leaderCommit = rf.commitIndex
-							leaderLastIncludeIndex = rf.LastIncludedIndex
-						}
 					} else {
-						// case 2, leader and follower agree on the term in XIndex where follower has its first entry in conflicting
-						// term. Given we know there is a conflict, the follower must have more entries that belongs to
-						// conflicting term than leader as leader's term in conflicting index (prevLogIndex in last iteration) must be strictly higher.
-						// If this is the case, the follower and leader will agree
-						// on all entries up to the last entry the leader has that belongs to the follower's conflicting term.
-						// then we just start from the entry 1 higher than index of leader's last entry in given conflicting term
-						// because that is known to be the first index of inconsistency.
-						for i := reply.XIndex + 1; i <= rf.logEndIndex; i++ {
-							entry := rf.logs[i]
-							if entry.Term != reply.XTerm {
-								rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(i)))
-								break;
+						if reply.XIndex > rf.current_sentinel_index {
+							// we also need to check if log at Xindex is trimmed or not
+							if rf.logs[reply.XIndex].Term != reply.XTerm {
+								
+								// case 1 where leader simply misses entire terms of entries in follower(XTerm is the first index of entry in conflicing term), 
+								// the leader simply start appending from XIndex to alter all follower entries from that diverging XIndex
+								
+								rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(reply.XIndex)))
+								
+								// since follower does not agree with leader on the term on the XIndex where follower has its first entry 
+								// corresponding to that term, we cans simply try start appending from XIndex
+								// since it is a known inconsistency
+								
+								prevLogIndexRpc = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndexRpc - 1)))
+								prevLogTermRpc = default_start_term
+								if prevLogIndexRpc > rf.current_sentinel_index{
+									prevLogTermRpc= rf.logs[prevLogIndexRpc].Term
+								} else {
+									leaderCommit = rf.commitIndex
+									leaderLastIncludeIndex = rf.LastIncludedIndex
+								}
+							} else {
+								// case 2, leader and follower agree on the term in XIndex where follower has its first entry in conflicting
+								// term. Given we know there is a conflict, the follower must have more entries that belongs to
+								// conflicting term than leader as leader's term in conflicting index (prevLogIndex in last iteration) must be strictly higher.
+								// If this is the case, the follower and leader will agree
+								// on all entries up to the last entry the leader has that belongs to the follower's conflicting term.
+								// then we just start from the entry 1 higher than index of leader's last entry in given conflicting term
+								// because that is known to be the first index of inconsistency.
+								for i := reply.XIndex + 1; i <= rf.logEndIndex; i++ {
+									entry := rf.logs[i]
+									if entry.Term != reply.XTerm {
+										rf.nextIndex[serverIndex] = int(math.Min(float64(rf.nextIndex[serverIndex]), float64(i)))
+										break;
+									}
+								}
+								prevLogIndexRpc = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndexRpc - 1)))
+								prevLogTermRpc = default_start_term
+								if prevLogIndexRpc > rf.current_sentinel_index{
+									prevLogTermRpc= rf.logs[prevLogIndexRpc].Term
+								} else {
+									leaderCommit = rf.commitIndex
+									leaderLastIncludeIndex = rf.LastIncludedIndex
+								}
 							}
-						}
-						prevLogIndexRpc = int(math.Min(float64(rf.nextIndex[serverIndex] - 1), float64(prevLogIndexRpc - 1)))
-						prevLogTermRpc = default_start_term
-						if prevLogIndexRpc > rf.current_sentinel_index{
-							prevLogTermRpc= rf.logs[prevLogIndexRpc].Term
 						} else {
+							//log.Printf("this server %d as leader (term %d) did not find matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d because leader log has been trimmed, so leader tries to match starting from current sentinel", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 							leaderCommit = rf.commitIndex
 							leaderLastIncludeIndex = rf.LastIncludedIndex
+							prevLogIndexRpc = rf.current_sentinel_index
+							prevLogTermRpc = default_start_term
 						}
 					}
+					
+					
 					
 					//log.Printf("this server %d as leader (term %d) now retries finding matched index for appending log at index %d with server %d with prevLogIndex %d and prevLogTerm %d did no receive reply, initiate retry with decrement", leaderId, term, index, serverIndex, prevLogIndex, prevLogTerm)
 					//log.Printf("Raft server %d obtainMatchIndex() Unlocked", rf.me)
@@ -1606,28 +1620,35 @@ func (rf *Raft) syncCommitIndexAndLastApplied() {
 			rf.mu.Lock()
 			
 		}*/
-		applyMsgBuffer :=  make(map[int]*ApplyMsg)
-		for i := applyStart; i <= applyEnd; i++ {
-			applyMsg := ApplyMsg{}
-			applyMsg.CommandValid = true
-			applyMsg.Command = rf.logs[i].Command
-			applyMsg.CommandIndex = i
-			applyMsg.CommandTerm = rf.logs[i].Term
 
-			/*rf.lastApplied = i
-			rf.mu.Unlock()
-			rf.applyMessage(applyMsg)
-			rf.mu.Lock()*/
-			applyMsgBuffer[i] = &applyMsg
-			
-		}
+		if applyStart > rf.current_sentinel_index {
+			applyMsgBuffer :=  make(map[int]*ApplyMsg)
+			for i := applyStart; i <= applyEnd; i++ {
+				applyMsg := ApplyMsg{}
+				applyMsg.CommandValid = true
+				applyMsg.Command = rf.logs[i].Command
+				applyMsg.CommandIndex = i
+				applyMsg.CommandTerm = rf.logs[i].Term
 
-		for j := applyStart; j <= applyEnd; j++ {
-			rf.lastApplied = j
-			rf.mu.Unlock()
-			rf.applyMessage(*applyMsgBuffer[j])
-			rf.mu.Lock()
+				/*rf.lastApplied = i
+				rf.mu.Unlock()
+				rf.applyMessage(applyMsg)
+				rf.mu.Lock()*/
+				applyMsgBuffer[i] = &applyMsg
+				
+			}
+
+			for j := applyStart; j <= applyEnd; j++ {
+				rf.lastApplied = j
+				rf.mu.Unlock()
+				rf.applyMessage(*applyMsgBuffer[j])
+				rf.mu.Lock()
+			}
+
+		} else {
+			rf.lastApplied = rf.current_sentinel_index
 		}
+		
 
 
 
