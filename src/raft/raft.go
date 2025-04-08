@@ -1606,28 +1606,35 @@ func (rf *Raft) syncCommitIndexAndLastApplied() {
 			rf.mu.Lock()
 			
 		}*/
-		applyMsgBuffer :=  make(map[int]*ApplyMsg)
-		for i := applyStart; i <= applyEnd; i++ {
-			applyMsg := ApplyMsg{}
-			applyMsg.CommandValid = true
-			applyMsg.Command = rf.logs[i].Command
-			applyMsg.CommandIndex = i
-			applyMsg.CommandTerm = rf.logs[i].Term
 
-			/*rf.lastApplied = i
-			rf.mu.Unlock()
-			rf.applyMessage(applyMsg)
-			rf.mu.Lock()*/
-			applyMsgBuffer[i] = &applyMsg
-			
-		}
+		if applyStart > rf.current_sentinel_index {
+			applyMsgBuffer :=  make(map[int]*ApplyMsg)
+			for i := applyStart; i <= applyEnd; i++ {
+				applyMsg := ApplyMsg{}
+				applyMsg.CommandValid = true
+				applyMsg.Command = rf.logs[i].Command
+				applyMsg.CommandIndex = i
+				applyMsg.CommandTerm = rf.logs[i].Term
 
-		for j := applyStart; j <= applyEnd; j++ {
-			rf.lastApplied = j
-			rf.mu.Unlock()
-			rf.applyMessage(*applyMsgBuffer[j])
-			rf.mu.Lock()
+				/*rf.lastApplied = i
+				rf.mu.Unlock()
+				rf.applyMessage(applyMsg)
+				rf.mu.Lock()*/
+				applyMsgBuffer[i] = &applyMsg
+				
+			}
+
+			for j := applyStart; j <= applyEnd; j++ {
+				rf.lastApplied = j
+				rf.mu.Unlock()
+				rf.applyMessage(*applyMsgBuffer[j])
+				rf.mu.Lock()
+			}
+
+		} else {
+			rf.lastApplied = rf.current_sentinel_index
 		}
+		
 
 
 
