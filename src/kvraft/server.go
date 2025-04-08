@@ -87,7 +87,9 @@ type StoredReply struct {
 
 func (kv *KVServer) tryInitSnapShot() {
 
+
 	_, isLeader := kv.rf.GetState()
+
 	if !isLeader {
 		return
 	} 
@@ -108,6 +110,7 @@ func (kv *KVServer) tryInitSnapShot() {
 	SnapShotByte := w.Bytes()
 
 	kv.rf.InitInstallSnapshot(LastIncludedIndex, LastIncludedTerm, SnapShotByte)
+
 	
 	return
 
@@ -208,11 +211,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			opToRaft.Key = key
 			opToRaft.Operation = "Get"
 
-			//kv.mu.Unlock()
 			//_, _, isLeader := kv.rf.Start(opToRaft)
+	
 			currentLeaderId, index, term, isLeader := kv.rf.StartQuick(opToRaft)
 
-			//kv.mu.Lock()
+	
 			if index == invalid_index {
 				reply.Err = ErrServerKilled
 				return
@@ -223,19 +226,23 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 				reply.CurrentLeaderId, reply.CurrentLeaderTerm = currentLeaderId, term 
 				return
 			} else {
-				if kv.maxraftstate != -1 {
+				/*if kv.maxraftstate != -1 {
+				
 					snapShotSize := kv.rf.GetRaftStateSize()
+				
 					if snapShotSize >= kv.maxraftstate {
+						//log.Printf("kvserver %d make snapshot in Get with LastIncludeIndex %d and LastIncludeTerm %d", kv.me, kv.LastIncludedIndex, kv.LastIncludedTerm)
 						kv.tryInitSnapShot()
 					}
-				}
+				}*/
 				//log.Printf("This kvserver %d (term %d) does not have cached result for Get request with key %s and serial number %d and is a  leader, now enqueue", kv.me, term, key, Sequence_Number)
 				kv.mu.Unlock()
 			}
 			
 			for {
-				//log.Printf("Kvserver %d (term %d) get wtf", kv.me, term)
+				//log.Printf("Kvserver get before lock")
 				kv.mu.Lock()
+				//log.Printf("Kvserver %d (term %d) get wtf", kv.me, term)
 				//log.Printf("Kvserver %d (term %d) get locked", kv.me, term)
 				if kv.killed() {
 					//log.Printf("This kvserver %d (term %d) has been killed", kv.me, term)
@@ -243,7 +250,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 					return
 				} 
 				//log.Printf("Kvserver %d (term %d) Get GetStateWtf init", kv.me, term)
-	
+
 				term, isLeader, currentLeaderId, serverRole = kv.rf.GetStateWTF()
 		
 				//log.Printf("Kvserver %d (term %d) Get GetStateWtf finished", kv.me, term)
@@ -349,7 +356,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	} 
 
 	// removed reply to previous rpc already finished
-
 	term, isLeader, currentLeaderId, serverRole := kv.rf.GetStateWTF()
 
 	if !isLeader {
@@ -390,11 +396,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			opToRaft.Value = value
 			opToRaft.Operation = op
 
-			//kv.mu.Unlock()
 			//_, _, isLeader := kv.rf.Start(opToRaft)
+	
 			currentLeaderId, index, term, isLeader := kv.rf.StartQuick(opToRaft)
+	
 
-			//kv.mu.Lock()
 			if index == invalid_index {
 				reply.Err = ErrServerKilled
 				return
@@ -405,18 +411,22 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				reply.CurrentLeaderId, reply.CurrentLeaderTerm = currentLeaderId, term
 				return
 			} else {
-				if kv.maxraftstate != -1 {
+				/*if kv.maxraftstate != -1 {
+				
 					snapShotSize := kv.rf.GetRaftStateSize()
+				
 					if snapShotSize >= kv.maxraftstate {
+						//log.Printf("kvserver %d make snapshot in PutAppend with LastIncludeIndex %d and LastIncludeTerm %d", kv.me, kv.LastIncludedIndex, kv.LastIncludedTerm)
 						kv.tryInitSnapShot()
 					}
-				}
+				}*/
 				//log.Printf("This kvserver %d (term %d) does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", kv.me, term, key, Sequence_Number)
 				kv.mu.Unlock()
 			}
 			
 			for {
-				//log.Printf("Kvserver %d putappend wtf", kv.me)
+
+				//log.Printf("Kvserver before lock")
 				kv.mu.Lock()
 				//log.Printf("Kvserver %d putappend locked ", kv.me)
 				if kv.killed() {
@@ -426,8 +436,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				} 
 				//log.Printf("Kvserver %d putappend GetStateWtf init", kv.me)
 
+			
 				term, isLeader, currentLeaderId, serverRole = kv.rf.GetStateWTF()
-	
+			
+
 				//log.Printf("Kvserver %d (term %d) putappend GetStateWtf finished", kv.me, term)
 				if !isLeader {
 					//log.Printf("This kvserver %d (term %d) has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", kv.me, term, key, Sequence_Number, currentLeaderId, term)
@@ -482,7 +494,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // and a killed() method to test rf.dead in
 // long-running loops. you can also add your own
 // code to Kill(). you're not required to do anything
-// about this, but itkv.rf.getCurrentLeaderId() may be convenient (for example)
+// about this, but it may be convenient (for example)
 // to suppress debug output from a Kill()ed instance.
 //
 func (kv *KVServer) Kill() {
@@ -688,8 +700,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-
-
 	if maxraftstate != -1 {
 		lastIncludedIndex, lastIncludedTerm, snapShotByte := kv.rf.SendSnapShotToKvServer() 
 		r := bytes.NewBuffer(snapShotByte)
@@ -735,19 +745,25 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 				kv.mu.Unlock()
 				return
 			} else {
+				
 				_, isLeader := kv.rf.GetState()
+				
 				if isLeader {
 					if kv.maxraftstate != -1 {
+					
 						snapShotSize := kv.rf.GetRaftStateSize()
+					
 						if snapShotSize >= kv.maxraftstate {
+							//log.Printf("kvserver %d make snapshot in StartKVServer with LastIncludeIndex %d and LastIncludeTerm %d", kv.me, kv.lastIncludedIndex, kv.lastIncludedTerm)
 							kv.tryInitSnapShot()
 						}
 					}
 				}
 				kv.handleRequest(applyMessage)
 				//log.Printf("kvserver %d finished handling request", kv.me)
-				kv.mu.Unlock()
 				//log.Printf("kvserver %d unlocked", kv.me)
+				kv.mu.Unlock()
+				
 			}
 		}
 	}(kv)

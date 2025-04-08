@@ -230,7 +230,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	for {
 		leaderId := ck.currentLeaderId
 		//log.Printf("leaderId is %d", leaderId)
-		if (leaderId  == invalid_leader) {
+		if (leaderId == invalid_leader) {
 			leaderId = ck.randServer()
 			//log.Printf("For client %d, %s request with (key %s, value %s) and sequence number %d re-route to random server %d", ck.Client_Serial_Number, op, key, value, args.Sequence_Number, leaderId)
 		} 
