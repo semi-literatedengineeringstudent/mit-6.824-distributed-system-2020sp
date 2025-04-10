@@ -1003,7 +1003,6 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 				
 			}
 
-
 			if len(shardsToAllocate) == 0 {
 				// if none of groups we ask to leave is in the config
 				// there is nothing we need to touch in old config
@@ -1012,14 +1011,6 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 				newConfig.Shards = newConfigShards
 				newConfig.Groups = newConfigGroups
 				sm.configs = append(sm.configs, newConfig)
-			} else if len(mapGidsToShards) == 0 {
-				// means there is no more groups...
-				newConfig := Config{}
-				newConfig.Num = newConfigNum
-				
-				newConfig.Groups = make(map[int][]string)
-				sm.configs = append(sm.configs, newConfig)
-
 			} else {
 				// there is some shard we need to move
 

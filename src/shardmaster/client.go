@@ -12,6 +12,9 @@ import "math/big"
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
+
+	Client_Serial_Number int64 // serial number with which we uniquely identify the client
+	Sequence_Number int //sequence number for requests used for duplication detection to ensure linearizability
 }
 
 func nrand() int64 {
@@ -25,6 +28,9 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// Your code here.
+
+	ck.Client_Serial_Number = nrand()
+	ck.Sequence_Number = 0
 	return ck
 }
 
@@ -32,6 +38,10 @@ func (ck *Clerk) Query(num int) Config {
 	args := &QueryArgs{}
 	// Your code here.
 	args.Num = num
+
+	args.Client_Serial_Number = ck.Client_Serial_Number
+	ck.Sequence_Number = ck.Sequence_Number + 1
+	args.Sequence_Number = ck.Sequence_Number
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
@@ -50,6 +60,9 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	// Your code here.
 	args.Servers = servers
 
+	args.Client_Serial_Number = ck.Client_Serial_Number
+	ck.Sequence_Number = ck.Sequence_Number + 1
+	args.Sequence_Number = ck.Sequence_Number
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
@@ -68,6 +81,9 @@ func (ck *Clerk) Leave(gids []int) {
 	// Your code here.
 	args.GIDs = gids
 
+	args.Client_Serial_Number = ck.Client_Serial_Number
+	ck.Sequence_Number = ck.Sequence_Number + 1
+	args.Sequence_Number = ck.Sequence_Number
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
@@ -87,6 +103,9 @@ func (ck *Clerk) Move(shard int, gid int) {
 	args.Shard = shard
 	args.GID = gid
 
+	args.Client_Serial_Number = ck.Client_Serial_Number
+	ck.Sequence_Number = ck.Sequence_Number + 1
+	args.Sequence_Number = ck.Sequence_Number
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
