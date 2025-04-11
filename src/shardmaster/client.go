@@ -11,7 +11,7 @@ import "math/big"
 
 import "sync"
 
-import "log"
+//import "log"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
@@ -49,14 +49,14 @@ func (ck *Clerk) Query(num int) Config {
 	args.Client_Serial_Number = ck.Client_Serial_Number
 	ck.Sequence_Number = ck.Sequence_Number + 1
 	args.Sequence_Number = ck.Sequence_Number
-	log.Printf("client %d init Query request with num %d, sequence number %d", ck.Client_Serial_Number, num, args.Sequence_Number)
+	//log.Printf("client %d init Query request with num %d, sequence number %d", ck.Client_Serial_Number, num, args.Sequence_Number)
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply QueryReply
 			ok := srv.Call("ShardMaster.Query", args, &reply)
 			if ok && reply.WrongLeader == false {
-				log.Printf("client %d received Query request with num %d, sequence number %d", ck.Client_Serial_Number, num, args.Sequence_Number)
+				//log.Printf("client %d received Query request with num %d, sequence number %d", ck.Client_Serial_Number, num, args.Sequence_Number)
 				return reply.Config
 			}
 		}
@@ -73,7 +73,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	args.Client_Serial_Number = ck.Client_Serial_Number
 	ck.Sequence_Number = ck.Sequence_Number + 1
 	args.Sequence_Number = ck.Sequence_Number
-	log.Printf("client %d init Join request sequence number %d", ck.Client_Serial_Number, args.Sequence_Number)
+	//log.Printf("client %d init Join request sequence number %d", ck.Client_Serial_Number, args.Sequence_Number)
 
 	for {
 		// try each known server.
@@ -81,7 +81,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 			var reply JoinReply
 			ok := srv.Call("ShardMaster.Join", args, &reply)
 			if ok && reply.WrongLeader == false {
-				log.Printf("client %d received Join request sequence number %d", ck.Client_Serial_Number, args.Sequence_Number)
+				//log.Printf("client %d received Join request sequence number %d", ck.Client_Serial_Number, args.Sequence_Number)
 				return
 			}
 		}
@@ -98,7 +98,7 @@ func (ck *Clerk) Leave(gids []int) {
 	args.Client_Serial_Number = ck.Client_Serial_Number
 	ck.Sequence_Number = ck.Sequence_Number + 1
 	args.Sequence_Number = ck.Sequence_Number
-	log.Printf("client %d init Leave request sequence number %d", ck.Client_Serial_Number, args.Sequence_Number)
+	//log.Printf("client %d init Leave request sequence number %d", ck.Client_Serial_Number, args.Sequence_Number)
 
 	for {
 		// try each known server.
@@ -106,7 +106,7 @@ func (ck *Clerk) Leave(gids []int) {
 			var reply LeaveReply
 			ok := srv.Call("ShardMaster.Leave", args, &reply)
 			if ok && reply.WrongLeader == false {
-				log.Printf("client %d received Leave request sequence number %d", ck.Client_Serial_Number, args.Sequence_Number)
+				//log.Printf("client %d received Leave request sequence number %d", ck.Client_Serial_Number, args.Sequence_Number)
 				return
 			}
 		}
@@ -124,14 +124,14 @@ func (ck *Clerk) Move(shard int, gid int) {
 	args.Client_Serial_Number = ck.Client_Serial_Number
 	ck.Sequence_Number = ck.Sequence_Number + 1
 	args.Sequence_Number = ck.Sequence_Number
-	log.Printf("client %d init Move request with shard %d, gid %d, and sequence number %d", ck.Client_Serial_Number, shard, gid, args.Sequence_Number)
+	//log.Printf("client %d init Move request with shard %d, gid %d, and sequence number %d", ck.Client_Serial_Number, shard, gid, args.Sequence_Number)
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply MoveReply
 			ok := srv.Call("ShardMaster.Move", args, &reply)
 			if ok && reply.WrongLeader == false {
-				log.Printf("client %d received Move request with shard %d, gid %d, and sequence number %d", ck.Client_Serial_Number, shard, gid, args.Sequence_Number)
+				//log.Printf("client %d received Move request with shard %d, gid %d, and sequence number %d", ck.Client_Serial_Number, shard, gid, args.Sequence_Number)
 				return
 			}
 		}

@@ -11,6 +11,12 @@ import "math"
 
 import "time"
 
+//import "log"
+
+import "strconv"
+
+import "sort"
+
 
 type ShardMaster struct {
 	mu      sync.Mutex
@@ -81,6 +87,8 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	Client_Serial_Number := args.Client_Serial_Number
 	Sequence_Number := args.Sequence_Number
 
+	//log.Printf("Shardmaster %d receives Join request from client %d with sequence_number %d", sm.me, Client_Serial_Number, Sequence_Number)
+
 	client_Info_This, ok := sm.clients_Info[Client_Serial_Number]
 	if !ok {
 		// means this leader is the first leader that has received request from this client
@@ -118,7 +126,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	}
 	
 
-	//log.Printf("This smserver %d has received Get request with key %s and serial number %d from clerk %d", sm.me, key, Sequence_Number, Client_Serial_Number)
+	////log.Printf("This smserver %d has received Join request with sequence number %d from clerk %d", sm.me, Sequence_Number, Client_Serial_Number)
 
 	if sm.killed() {
 		reply.WrongLeader = true
@@ -127,10 +135,12 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	} 
 
 	// removed reply to previous rpc already finished
+	//log.Printf("server %d raft Join lock 1", sm.me)
 	_, isLeader := sm.rf.GetState()
+	//log.Printf("server %d raft Join unlock 1", sm.me)
 
 	if !isLeader {
-		//log.Printf("This smserver %d (term %d) has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+		//log.Printf("This smserver %d has received Join request from client %d with sequence number %d but is not leader", sm.me, Client_Serial_Number, Sequence_Number)
 		reply.WrongLeader = true
 		return
 	} else {
@@ -148,7 +158,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 			reply.WrongLeader = false
 			reply.Err = cachedReply.Err
 
-			//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", sm.me, term, key, Client_Serial_Number, Sequence_Number)
+			//log.Printf("This smserver %d has cached result for Join request  client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 			
 			return
 		} else {
@@ -160,35 +170,39 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 
 			opToRaft.Servers = servers
 			opToRaft.Operation = op
-
+			
+			//log.Printf("server %d raft start lock", sm.me)
 			_, _, _, isLeader := sm.rf.StartQuick(opToRaft)
+			//log.Printf("server %d raft start unlock 1", sm.me)
 	
 			if !isLeader {
-				//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+				//log.Printf("This smserver %d has cached result for Join request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 				reply.WrongLeader = true
 				
 				return
 			} else {
-				//log.Printf("This smserver %d (term %d) does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", sm.me, term, key, Sequence_Number)
+				//log.Printf("This smserver %d does not have cached result for Join request client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 				sm.mu.Unlock()
 			}
 			
 			for {
-				//log.Printf("smserver before lock")
+				////log.Printf("smserver before lock")
 				sm.mu.Lock()
-				//log.Printf("smserver %d putappend locked ", sm.me)
+				////log.Printf("smserver %d putappend locked ", sm.me)
 				if sm.killed() {
 					//log.Printf("This smserver %d has been killed", sm.me)
 					reply.WrongLeader = true
 					return
 				} 
-				//log.Printf("smserver %d putappend GetStateWtf init", sm.me)
+				////log.Printf("smserver %d putappend GetStateWtf init", sm.me)
 
+				//log.Printf("server %d raft Join lock 2", sm.me)
 				_, isLeader := sm.rf.GetState()
+				//log.Printf("server %d raft Join unlock 2", sm.me)
 			
-				//log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
+				////log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
 				if !isLeader {
-					//log.Printf("This smserver %d (term %d) has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+					//log.Printf("This smserver %d has cached result for Join request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 		
 					reply.WrongLeader = true
 					return
@@ -198,12 +212,12 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 					Client_Received_Sequence_Number = client_Info_This.Received_Sequence_Number
 					Client_Last_Processed_Sequence_Number = client_Info_This.Last_Processed_Sequence_Number
 
-					//log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
+					////log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
 
 					if Sequence_Number <= Client_Received_Sequence_Number {
 						// dude the client has already received reply, so that reply is just staled and we don't need to do 
 						// anything about it
-						//log.Printf("smserver %d (term %d) wtf2", sm.me, term)
+						////log.Printf("smserver %d (term %d) wtf2", sm.me, term)
 						return
 					} else if Sequence_Number <= Client_Last_Processed_Sequence_Number {
 						// good, that means cached reply is still in the dictionary
@@ -212,12 +226,12 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 						reply.WrongLeader = false
 						reply.Err = cachedReply.Err
 			
-						//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", sm.me, term, key, Client_Serial_Number, Sequence_Number)
+						//log.Printf("This smserver %d has cached result for Join request with client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 						
 						return
 					} else {
-						//log.Printf("This smserver %d (term %d) does not cached result for Get request with key %s, client: %d, seq_num: %d, keep waiting...", sm.me, term, key, Client_Serial_Number, Sequence_Number)
-						//log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
+						//log.Printf("This smserver %d does not have cached result for Join request with client: %d, seq_num: %d, keep waiting", sm.me, Client_Serial_Number, Sequence_Number)
+						////log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
 						sm.mu.Unlock()
 					}
 				}
@@ -234,10 +248,13 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	op := "Leave"
-	
+
 	gids := args.GIDs
+
 	Client_Serial_Number := args.Client_Serial_Number
 	Sequence_Number := args.Sequence_Number
+
+	//log.Printf("Shardmaster %d receives Leave request from client %d with sequence_number %d", sm.me, Client_Serial_Number, Sequence_Number)
 
 	client_Info_This, ok := sm.clients_Info[Client_Serial_Number]
 	if !ok {
@@ -276,7 +293,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	}
 	
 
-	//log.Printf("This smserver %d has received Get request with key %s and serial number %d from clerk %d", sm.me, key, Sequence_Number, Client_Serial_Number)
+	////log.Printf("This smserver %d has received Join request with sequence number %d from clerk %d", sm.me, Sequence_Number, Client_Serial_Number)
 
 	if sm.killed() {
 		reply.WrongLeader = true
@@ -285,10 +302,12 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	} 
 
 	// removed reply to previous rpc already finished
+	//log.Printf("server %d raft Leave lock 1", sm.me)
 	_, isLeader := sm.rf.GetState()
+	//log.Printf("server %d raft Leave unlock 1", sm.me)
 
 	if !isLeader {
-		//log.Printf("This smserver %d (term %d) has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+		//log.Printf("This smserver %d has received Leave request from client %d with sequence number %d but is not leader", sm.me, Client_Serial_Number, Sequence_Number)
 		reply.WrongLeader = true
 		return
 	} else {
@@ -306,7 +325,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 			reply.WrongLeader = false
 			reply.Err = cachedReply.Err
 
-			//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", sm.me, term, key, Client_Serial_Number, Sequence_Number)
+			//log.Printf("This smserver %d has cached result for Leave request  client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 			
 			return
 		} else {
@@ -318,35 +337,38 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 
 			opToRaft.GIDs = gids
 			opToRaft.Operation = op
-
+			//log.Printf("server %d raft Leave start lock ", sm.me)
 			_, _, _, isLeader := sm.rf.StartQuick(opToRaft)
+			//log.Printf("server %d raft Leave start unlock ", sm.me)
 	
 			if !isLeader {
-				//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+				//log.Printf("This smserver %d has cached result for Leave request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 				reply.WrongLeader = true
 				
 				return
 			} else {
-				//log.Printf("This smserver %d (term %d) does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", sm.me, term, key, Sequence_Number)
+				//log.Printf("This smserver %d does not have cached result for Leave request client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 				sm.mu.Unlock()
 			}
 			
 			for {
-				//log.Printf("smserver before lock")
+				////log.Printf("smserver before lock")
 				sm.mu.Lock()
-				//log.Printf("smserver %d putappend locked ", sm.me)
+				////log.Printf("smserver %d putappend locked ", sm.me)
 				if sm.killed() {
 					//log.Printf("This smserver %d has been killed", sm.me)
 					reply.WrongLeader = true
 					return
 				} 
-				//log.Printf("smserver %d putappend GetStateWtf init", sm.me)
+				////log.Printf("smserver %d putappend GetStateWtf init", sm.me)
 
+				//log.Printf("server %d raft Leave lock 2 ", sm.me)
 				_, isLeader := sm.rf.GetState()
+				//log.Printf("server %d raft Leave unlock 2 ", sm.me)
 			
-				//log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
+				////log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
 				if !isLeader {
-					//log.Printf("This smserver %d (term %d) has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+					//log.Printf("This smserver %d has cached result for Leave request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 		
 					reply.WrongLeader = true
 					return
@@ -356,12 +378,13 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 					Client_Received_Sequence_Number = client_Info_This.Received_Sequence_Number
 					Client_Last_Processed_Sequence_Number = client_Info_This.Last_Processed_Sequence_Number
 
-					//log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
+					////log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
 
 					if Sequence_Number <= Client_Received_Sequence_Number {
 						// dude the client has already received reply, so that reply is just staled and we don't need to do 
 						// anything about it
-						//log.Printf("smserver %d (term %d) wtf2", sm.me, term)
+						//log.Printf("smserver %d  wtf2", sm.me)
+
 						return
 					} else if Sequence_Number <= Client_Last_Processed_Sequence_Number {
 						// good, that means cached reply is still in the dictionary
@@ -370,12 +393,12 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 						reply.WrongLeader = false
 						reply.Err = cachedReply.Err
 			
-						//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", sm.me, term, key, Client_Serial_Number, Sequence_Number)
+						//log.Printf("This smserver %d has cached result for Leave request with client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 						
 						return
 					} else {
-						//log.Printf("This smserver %d (term %d) does not cached result for Get request with key %s, client: %d, seq_num: %d, keep waiting...", sm.me, term, key, Client_Serial_Number, Sequence_Number)
-						//log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
+						//log.Printf("This smserver %d does not have cached result for Leave request with client: %d, seq_num: %d, keep waiting", sm.me, Client_Serial_Number, Sequence_Number)
+						////log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
 						sm.mu.Unlock()
 					}
 				}
@@ -392,10 +415,13 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	op := "Move"
+
 	shard := args.Shard
 	gid := args.GID
 	Client_Serial_Number := args.Client_Serial_Number
 	Sequence_Number := args.Sequence_Number
+
+	//log.Printf("Shardmaster %d receives Move request from client %d with sequence_number %d", sm.me, Client_Serial_Number, Sequence_Number)
 
 	client_Info_This, ok := sm.clients_Info[Client_Serial_Number]
 	if !ok {
@@ -434,7 +460,7 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 	}
 	
 
-	//log.Printf("This smserver %d has received Get request with key %s and serial number %d from clerk %d", sm.me, key, Sequence_Number, Client_Serial_Number)
+	////log.Printf("This smserver %d has received Join request with sequence number %d from clerk %d", sm.me, Sequence_Number, Client_Serial_Number)
 
 	if sm.killed() {
 		reply.WrongLeader = true
@@ -443,10 +469,12 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 	} 
 
 	// removed reply to previous rpc already finished
+	//log.Printf("server %d raft Move lock 1 ", sm.me)
 	_, isLeader := sm.rf.GetState()
+	//log.Printf("server %d raft Move unlock 1 ", sm.me)
 
 	if !isLeader {
-		//log.Printf("This smserver %d (term %d) has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+		//log.Printf("This smserver %d has received Move request from client %d with sequence number %d but is not leader", sm.me, Client_Serial_Number, Sequence_Number)
 		reply.WrongLeader = true
 		return
 	} else {
@@ -464,7 +492,7 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 			reply.WrongLeader = false
 			reply.Err = cachedReply.Err
 
-			//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", sm.me, term, key, Client_Serial_Number, Sequence_Number)
+			//log.Printf("This smserver %d has cached result for Move request  client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 			
 			return
 		} else {
@@ -477,35 +505,38 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 			opToRaft.Shard = shard
 			opToRaft.GID = gid
 			opToRaft.Operation = op
-
+			//log.Printf("server %d raft Move start lock 1 ", sm.me)
 			_, _, _, isLeader := sm.rf.StartQuick(opToRaft)
+			//log.Printf("server %d raft Move start unlock 1 ", sm.me)
 	
 			if !isLeader {
-				//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+				//log.Printf("This smserver %d has cached result for Move request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 				reply.WrongLeader = true
 				
 				return
 			} else {
-				//log.Printf("This smserver %d (term %d) does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", sm.me, term, key, Sequence_Number)
+				//log.Printf("This smserver %d does not have cached result for Move request client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 				sm.mu.Unlock()
 			}
 			
 			for {
-				//log.Printf("smserver before lock")
+				////log.Printf("smserver before lock")
 				sm.mu.Lock()
-				//log.Printf("smserver %d putappend locked ", sm.me)
+				////log.Printf("smserver %d putappend locked ", sm.me)
 				if sm.killed() {
 					//log.Printf("This smserver %d has been killed", sm.me)
 					reply.WrongLeader = true
 					return
 				} 
-				//log.Printf("smserver %d putappend GetStateWtf init", sm.me)
+				////log.Printf("smserver %d putappend GetStateWtf init", sm.me)
 
+				//log.Printf("server %d raft Move lock 2", sm.me)
 				_, isLeader := sm.rf.GetState()
+				//log.Printf("server %d raft Move unlock 2", sm.me)
 			
-				//log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
+				////log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
 				if !isLeader {
-					//log.Printf("This smserver %d (term %d) has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+					//log.Printf("This smserver %d has cached result for Move request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 		
 					reply.WrongLeader = true
 					return
@@ -515,12 +546,12 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 					Client_Received_Sequence_Number = client_Info_This.Received_Sequence_Number
 					Client_Last_Processed_Sequence_Number = client_Info_This.Last_Processed_Sequence_Number
 
-					//log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
+					////log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
 
 					if Sequence_Number <= Client_Received_Sequence_Number {
 						// dude the client has already received reply, so that reply is just staled and we don't need to do 
 						// anything about it
-						//log.Printf("smserver %d (term %d) wtf2", sm.me, term)
+						////log.Printf("smserver %d (term %d) wtf2", sm.me, term)
 						return
 					} else if Sequence_Number <= Client_Last_Processed_Sequence_Number {
 						// good, that means cached reply is still in the dictionary
@@ -529,12 +560,12 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 						reply.WrongLeader = false
 						reply.Err = cachedReply.Err
 			
-						//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", sm.me, term, key, Client_Serial_Number, Sequence_Number)
+						//log.Printf("This smserver %d has cached result for Move request with client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 						
 						return
 					} else {
-						//log.Printf("This smserver %d (term %d) does not cached result for Get request with key %s, client: %d, seq_num: %d, keep waiting...", sm.me, term, key, Client_Serial_Number, Sequence_Number)
-						//log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
+						//log.Printf("This smserver %d does not have cached result for Move request with client: %d, seq_num: %d, keep waiting", sm.me, Client_Serial_Number, Sequence_Number)
+						////log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
 						sm.mu.Unlock()
 					}
 				}
@@ -551,9 +582,12 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	op := "Query"
+	
 	num := args.Num
 	Client_Serial_Number := args.Client_Serial_Number
 	Sequence_Number := args.Sequence_Number
+
+	//log.Printf("Shardmaster %d receives Query request from client %d with sequence_number %d", sm.me, Client_Serial_Number, Sequence_Number)
 
 	client_Info_This, ok := sm.clients_Info[Client_Serial_Number]
 	if !ok {
@@ -592,7 +626,7 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	}
 	
 
-	//log.Printf("This smserver %d has received Get request with key %s and serial number %d from clerk %d", sm.me, key, Sequence_Number, Client_Serial_Number)
+	////log.Printf("This smserver %d has received Join request with sequence number %d from clerk %d", sm.me, Sequence_Number, Client_Serial_Number)
 
 	if sm.killed() {
 		reply.WrongLeader = true
@@ -601,10 +635,12 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	} 
 
 	// removed reply to previous rpc already finished
+	//log.Printf("server %d raft Query lock 1", sm.me)
 	_, isLeader := sm.rf.GetState()
+	//log.Printf("server %d raft Query unlock 2", sm.me)
 
 	if !isLeader {
-		//log.Printf("This smserver %d (term %d) has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+		//log.Printf("This smserver %d has received Query request from client %d with sequence number %d but is not leader", sm.me, Client_Serial_Number, Sequence_Number)
 		reply.WrongLeader = true
 		return
 	} else {
@@ -623,7 +659,7 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 			reply.Err = cachedReply.Err
 			reply.Config = cachedReply.ConfigToReturn
 
-			//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", sm.me, term, key, Client_Serial_Number, Sequence_Number)
+			//log.Printf("This smserver %d has cached result for Query request from  client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 			
 			return
 		} else {
@@ -635,35 +671,39 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 
 			opToRaft.Num = num
 			opToRaft.Operation = op
-
+			
+			//log.Printf("server %d raft Query start lock", sm.me)
 			_, _, _, isLeader := sm.rf.StartQuick(opToRaft)
+			//log.Printf("server %d raft Query start unlock", sm.me)
 	
 			if !isLeader {
-				//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+				//log.Printf("This smserver %d has cached result for Query request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 				reply.WrongLeader = true
 				
 				return
 			} else {
-				//log.Printf("This smserver %d (term %d) does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", sm.me, term, key, Sequence_Number)
+				//log.Printf("This smserver %d does not have cached result for Query request client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 				sm.mu.Unlock()
 			}
 			
 			for {
-				//log.Printf("smserver before lock")
+				////log.Printf("smserver before lock")
 				sm.mu.Lock()
-				//log.Printf("smserver %d putappend locked ", sm.me)
+				////log.Printf("smserver %d putappend locked ", sm.me)
 				if sm.killed() {
 					//log.Printf("This smserver %d has been killed", sm.me)
 					reply.WrongLeader = true
 					return
 				} 
-				//log.Printf("smserver %d putappend GetStateWtf init", sm.me)
+				////log.Printf("smserver %d putappend GetStateWtf init", sm.me)
 
+				//log.Printf("server %d raft Query lock 2", sm.me)
 				_, isLeader := sm.rf.GetState()
+				//log.Printf("server %d raft Query unlock 2", sm.me)
 			
-				//log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
+				////log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
 				if !isLeader {
-					//log.Printf("This smserver %d (term %d) has received Get request with key %s and serial number %d but is not leader, re route to leader %d of term %d", sm.me, term, key, Sequence_Number, currentLeaderId, term)
+					//log.Printf("This smserver %d has cached result for Query request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 		
 					reply.WrongLeader = true
 					return
@@ -673,12 +713,12 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 					Client_Received_Sequence_Number = client_Info_This.Received_Sequence_Number
 					Client_Last_Processed_Sequence_Number = client_Info_This.Last_Processed_Sequence_Number
 
-					//log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
+					////log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
 
 					if Sequence_Number <= Client_Received_Sequence_Number {
 						// dude the client has already received reply, so that reply is just staled and we don't need to do 
 						// anything about it
-						//log.Printf("smserver %d (term %d) wtf2", sm.me, term)
+						////log.Printf("smserver %d (term %d) wtf2", sm.me, term)
 						return
 					} else if Sequence_Number <= Client_Last_Processed_Sequence_Number {
 						// good, that means cached reply is still in the dictionary
@@ -686,15 +726,14 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 			
 						reply.WrongLeader = false
 						reply.Err = cachedReply.Err
-
 						reply.Config = cachedReply.ConfigToReturn
 			
-						//log.Printf("This smserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", sm.me, term, key, Client_Serial_Number, Sequence_Number)
+						//log.Printf("This smserver %d has cached result for Query request with client: %d, seq_num: %d", sm.me, Client_Serial_Number, Sequence_Number)
 						
 						return
 					} else {
-						//log.Printf("This smserver %d (term %d) does not cached result for Get request with key %s, client: %d, seq_num: %d, keep waiting...", sm.me, term, key, Client_Serial_Number, Sequence_Number)
-						//log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
+						//log.Printf("This smserver %d does not have cached result for Query request with client: %d, seq_num: %d, keep waiting", sm.me, Client_Serial_Number, Sequence_Number)
+						////log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
 						sm.mu.Unlock()
 					}
 				}
@@ -771,6 +810,7 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 	latestConfigShards := latestConfig.Shards
 	latestConfigGroups := latestConfig.Groups
 	if op == "Join" {
+		//log.Printf("Shard master %d handling Join request from Client %d with seq_num %d, updating config to version %d", sm.me, Client_Serial_Number, Sequence_Number, latestConfigNum + 1)
 		
 		serversToJoin := operation.Servers
 
@@ -778,27 +818,45 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 		newConfigShards := latestConfigShards
 		newConfigGroups := make(map[int][]string)
 
+		groupsBeforeJoinList := make([]int, 0)
 		for gid, servers := range latestConfigGroups {
 			newConfigGroups[gid] = servers
+			groupsBeforeJoinList = append(groupsBeforeJoinList, gid)
 		}
+		// sort groups before join in ascending order
+		sort.Sort(sort.IntSlice(groupsBeforeJoinList))
 
-		newGidList := make([]int, 0)
+		groupsBeforeJoin := ""
+		for _, gid := range groupsBeforeJoinList {
+			groupsBeforeJoin = groupsBeforeJoin + " " + strconv.Itoa(gid)
+		}
+		//log.Printf("On ShardMaster %d, version %d, Groups before join are : %s",sm.me, latestConfigNum, groupsBeforeJoin)
+
+		groupsToJoinList := make([]int, 0)
 		for gid, servers := range serversToJoin {
+			
 			newConfigGroups[gid] = servers
 			_, ok := latestConfigGroups[gid]
 			if !ok {
 				// if the gid we want to join is already in the config, then we only change its corresponding servers
 				// if not, we know is it a new group we need to add
-				newGidList = append(newGidList, gid)
+				groupsToJoinList = append(groupsToJoinList, gid)
 			}
-			
 		}
+		sort.Sort(sort.IntSlice(groupsToJoinList))
+
+		groupsToJoin := ""
+		for _, gid := range groupsToJoinList {
+			groupsToJoin = groupsToJoin + " " + strconv.Itoa(gid)
+		}
+		
+		//log.Printf("On ShardMaster %d, version %d, Groups to join are : %s",sm.me, latestConfigNum, groupsToJoin)
 
 		if len(latestConfigGroups) == 0 {
 			// meaning all shards have not been appointed to any group, we have no group in previous config 
 			for i := 0; i < NShards; i++ {
 				// simply assign shards to new groups in round robin fashion
-				newConfigShards[i] = newGidList[i % len(newGidList)]
+				newConfigShards[i] = groupsToJoinList[i % len(groupsToJoinList)]
 			}
 
 			newConfig := Config{}
@@ -807,8 +865,9 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 			newConfig.Groups = newConfigGroups
 			sm.configs = append(sm.configs, newConfig)
 
-		} else if len(newGidList) == 0 {
+		} else if len(groupsToJoinList) == 0 {
 			// like there is no newGid we need to add; they already in group and we just change their correspondiong server
+			// so no assignment changed is needed
 			newConfig := Config{}
 			newConfig.Num = newConfigNum
 			newConfig.Shards = newConfigShards
@@ -828,21 +887,50 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 				mapGidsToShards[gid] = append(gidShardList, shard)
 			}
 
-			for _, newGid := range newGidList {
+			for _, newGid := range groupsToJoinList {
 				mapGidsToShards[newGid] = make([]int, 0)
 			}
 
+
+
 			numOfGroup := len(newConfigGroups)
+
+			totalGroup := append(groupsBeforeJoinList, groupsToJoinList...)
+			sort.Sort(sort.IntSlice(totalGroup))
+
+			//log.Printf("On ShardMaster %d, version %d, shard assignment before Join: ",sm.me, latestConfigNum)
+
+			for _, gid := range totalGroup {
+				shardList := mapGidsToShards[gid]
+				shardString := ""
+				for _, shard := range shardList {
+					shardString = shardString + " " + strconv.Itoa(shard)
+				}
+				//log.Printf("On gid %d, shards are: %s", gid, shardString)
+			}
+
+
 
 			// max number of shards a group could have to maintain shard assignment balance
 			// for example, if NShards = 5, and we have 2 groups, the max number will be ceil(5/2) = 3
-			maxNumberOfShardInGroup := int(math.Ceil(float64(NShards / numOfGroup)))
+			// min will be floor(5/2) = 2
+			// if NShards = 10 and we have 12 groups (which could happen if we Join too much without Leave)
+			// max will be 1 and min will be 1
 
-			minNumberOfShardInGroup := int(math.Floor(float64(NShards / numOfGroup)))
+
+			maxNumberOfShardInGroup := int(math.Ceil(float64(NShards) / float64(numOfGroup)))
+
+			minNumberOfShardInGroup := int(math.Floor(float64(NShards) / float64(numOfGroup)))
 
 			for {
+				////log.Printf("NShards is %d, nunOfGroup is %d", NShards, numOfGroup)
+				////log.Printf("maxNumberOfShardInGroup is %d, minNumberOfShardInGroup is %d", maxNumberOfShardInGroup, minNumberOfShardInGroup)
+				////log.Printf("Shardmaster %d looping", sm.me)
 				groupToRemoveFrom := -1
-				for gid, shardList := range mapGidsToShards {
+
+				for i := 0; i < len(totalGroup); i++ {
+					gid := totalGroup[i]
+					shardList := mapGidsToShards[gid]
 					if len(shardList) > maxNumberOfShardInGroup {
 						// to ensure minimal transfer, we only move shards from group whose
 						// size is bigger then max group size in new replica groups set
@@ -853,16 +941,18 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 
 				groupToMoveTo := -1
 
-				for _, newGid := range newGidList {
-					shardList := mapGidsToShards[newGid]
+				for i := 0; i < len(totalGroup); i++ {
+					gid := totalGroup[i]
+					shardList := mapGidsToShards[gid]
 					if len(shardList) < minNumberOfShardInGroup {
-						// we attempt to move shard to new gids
-						// if a new gid has shard list size < minimum number of shards we can add to group
-						// we add new shard to that group, regardless of it being newGid or not
-						groupToMoveTo = newGid
+						// to ensure minimal transfer, we only move shards to group whose
+						// size is less than min group size in new replica groups set
+						groupToMoveTo = gid
 						break
 					}
 				}
+
+				////log.Printf("first, groupToRemoveFrom is %d, and groupToMoveTo is %d",groupToRemoveFrom, groupToMoveTo)
 
 
 
@@ -880,21 +970,16 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 
 					minLength := 257 // magical number from test I just saw...
 
-					/*for gid, shardList := range mapGidsToShards {
-						if len(shardList) <= minLength{
-							minLength = len(shardList)
-							groupToMoveTo = gid
-						}
-					}*/
-
-					for _, newGid := range newGidList {
-						shardList := mapGidsToShards[newGid]
-						if len(shardList) <= minLength {
+					for i := 0; i < len(totalGroup); i++ {
+						gid := totalGroup[i]
+						shardList := mapGidsToShards[gid]
+						if len(shardList) < minLength {
 							// we attempt to move shard to new gids
 							// if a new gid has shard list size < minimum number of shards we can add to group
 							// we add new shard to that group, regardless of it being newGid or not
-							groupToMoveTo = newGid
+							groupToMoveTo = gid
 							minLength = len(shardList)
+
 						}
 					}
 
@@ -907,10 +992,15 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 
 					maxLength := 0 
 
-					for gid, shardList := range mapGidsToShards {
-						if len(shardList) >= maxLength{
-							maxLength = len(shardList)
+					for i := 0; i < len(totalGroup); i++ {
+						gid := totalGroup[i]
+						shardList := mapGidsToShards[gid]
+						if len(shardList) > maxLength {
+							// we attempt to move shard to new gids
+							// if a new gid has shard list size < minimum number of shards we can add to group
+							// we add new shard to that group, regardless of it being newGid or not
 							groupToRemoveFrom = gid
+							maxLength = len(shardList)
 						}
 					}
 
@@ -919,6 +1009,8 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 					groupToMoveTo = groupToMoveTo
 
 				}
+
+				////log.Printf("groupToRemoveFrom is %d, and groupToMoveTo is %d",groupToRemoveFrom, groupToMoveTo)
 				// get list from which we get a shard to move to new group
 				shardListFromGroupToRemoveFrom := mapGidsToShards[groupToRemoveFrom]
 
@@ -948,11 +1040,36 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 			newConfig.Shards = newConfigShards
 			newConfig.Groups = newConfigGroups
 			sm.configs = append(sm.configs, newConfig)
+
+			//log.Printf("On ShardMaster %d, version %d, shard assignment after Join :",sm.me, newConfigNum)
+
+			for _, gid := range totalGroup {
+				shardList := mapGidsToShards[gid]
+				shardString := ""
+				for _, shard := range shardList {
+					shardString = shardString + " " + strconv.Itoa(shard)
+				}
+				//log.Printf("On gid %d, shards are: %s", gid, shardString)
+			}
 		}
+		groupsAfterJoinList := make([]int, 0)
+		for gid, _ := range sm.configs[len(sm.configs) - 1].Groups {
+			groupsAfterJoinList = append(groupsAfterJoinList, gid)
+		}
+
+		sort.Sort(sort.IntSlice(groupsAfterJoinList))
+
+		groupsAfterJoin := ""
+		for _, gid := range groupsAfterJoinList {
+			groupsAfterJoin = groupsAfterJoin + " " + strconv.Itoa(gid)
+		}
+
+		//log.Printf("On ShardMaster %d, version %d, Groups after join are : %s",sm.me, newConfigNum, groupsAfterJoin)
 
 		replyToStore.Err = OK
 	
 	} else if op == "Leave" {
+		//log.Printf("Shard master %d handling Leave request from Client %d with seq_num %d, updating config to version %d", sm.me, Client_Serial_Number, Sequence_Number, latestConfigNum + 1)
 		
 		gidsToLeave := operation.GIDs
 
@@ -960,37 +1077,62 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 		newConfigShards := latestConfigShards
 		newConfigGroups := make(map[int][]string)
 
+		
+		groupsBeforeLeaveList := make([]int, 0)
 		for gid, servers := range latestConfigGroups {
 			newConfigGroups[gid] = servers
+			groupsBeforeLeaveList = append(groupsBeforeLeaveList, gid)
 		}
+		sort.Sort(sort.IntSlice(groupsBeforeLeaveList))
+
+		groupsBeforeLeave := ""
+		for _, gid := range groupsBeforeLeaveList {
+			groupsBeforeLeave = groupsBeforeLeave + " " + strconv.Itoa(gid)
+		}
+
+		//log.Printf("On ShardMaster %d, version %d, Groups before Leave are : %s",sm.me, latestConfigNum, groupsBeforeLeave)
 
 		if len(latestConfigGroups) == 0 {
 			// meaning there is no group in the config in the first place
 			// then nothing we need to do
+			//log.Printf("On ShardMaster %d, version %d, there is no group in latest config, so nothing to do",sm.me, latestConfigNum)
 			newConfig := Config{}
 			newConfig.Num = newConfigNum
 			newConfig.Shards = newConfigShards
 			newConfig.Groups = newConfigGroups
 			sm.configs = append(sm.configs, newConfig)
-
-
 		} else {
 			mapGidsToShards := make(map[int][]int)
 
+			for gid, _ := range latestConfigGroups {
+				mapGidsToShards[gid] = make([]int, 0)
+			}
+
 			for shard, gid := range latestConfigShards {
 
-				_, ok := mapGidsToShards[gid]
-
-				if !ok {
-					mapGidsToShards[gid] = make([]int, 0)
-				}
 				mapGidsToShards[gid] = append(mapGidsToShards[gid], shard)
 			}
 
+			//log.Printf("On ShardMaster %d, version %d, shard assignment before Leave :",sm.me, latestConfigNum)
+
+			for _, gid := range groupsBeforeLeaveList  {
+				shardList := mapGidsToShards[gid]
+				shardString := ""
+				for _, shard := range shardList {
+					shardString = shardString + " " + strconv.Itoa(shard)
+				}
+				//log.Printf("On gid %d, shards are: %s", gid, shardString)
+			}
+
+			groupsToLeaveList := make([]int, 0)
 			shardsToAllocate := make([]int, 0)
+
+			//log.Printf("number of GIDs before delete is %d", len(mapGidsToShards))
 			for _, gidToLeave := range gidsToLeave {
 				
 				shardsToMove, ok := mapGidsToShards[gidToLeave]
+
+				groupsToLeaveList = append(groupsToLeaveList, gidToLeave)
 
 				if ok {
 					// it is possible the server we ask to leave is not in the config in the first place
@@ -1002,18 +1144,40 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 				}
 				
 			}
+			//log.Printf("number of GIDs after delete is %d", len(mapGidsToShards))
 
+			sort.Sort(sort.IntSlice(groupsToLeaveList))
+
+			groupsToLeave := ""
+			for _, gid := range groupsToLeaveList {
+				groupsToLeave  = groupsToLeave  + " " + strconv.Itoa(gid)
+			}
+
+
+			//log.Printf("On ShardMaster %d, version %d, Groups to leave are : %s",sm.me, latestConfigNum, groupsToLeave)
 
 			if len(shardsToAllocate) == 0 {
-				// if none of groups we ask to leave is in the config
-				// there is nothing we need to touch in old config
+				// either none of groups we ask to leave is in the config
+				// or groups that are in latest config has no shard assigned to
+				// then there is no shard reassignment needed
+				// but we do need to ensure we remove the gids in Leave arguement that exists in latest config to
+				// get the new config
+				//log.Printf("None of the group we try to leave exists in config, so assignment will not change, but still attempt to remove gids in args from the groups")
 				newConfig := Config{}
 				newConfig.Num = newConfigNum
 				newConfig.Shards = newConfigShards
 				newConfig.Groups = newConfigGroups
+
+				for _, gidToLeave := range gidsToLeave {
+					_, ok := newConfig.Groups[gidToLeave]
+					if ok {
+						delete(newConfig.Groups, gidToLeave)
+					}
+				}
 				sm.configs = append(sm.configs, newConfig)
 			} else if len(mapGidsToShards) == 0 {
 				// means there is no more groups...
+				//log.Printf("We just removed every group in the lates config, so literally there is no group shards can be assigned to...")
 				newConfig := Config{}
 				newConfig.Num = newConfigNum
 				
@@ -1023,24 +1187,46 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 			} else {
 				// there is some shard we need to move
 
+				groupsAfterLeaveList := make([]int, 0)
+				for gid, _ := range mapGidsToShards {
+					groupsAfterLeaveList = append(groupsAfterLeaveList, gid)
+				}
+				sort.Sort(sort.IntSlice(groupsAfterLeaveList))
+
+				groupsAfterLeave := ""
+				for _, gid := range groupsAfterLeaveList {
+					groupsAfterLeave = groupsAfterLeave + " " + strconv.Itoa(gid)
+				}
+
+
+				//log.Printf("On ShardMaster %d, version %d, GroupsAfterLeave are : %s",sm.me, latestConfigNum, groupsAfterLeave)
+
+				sort.Sort(sort.IntSlice(shardsToAllocate))
+
 				for len(shardsToAllocate) != 0 {
 					// while there is still some shards to move
 
 					minLength := 257 // magical number from test I just saw...
+					groupToMoveTo := -1
+					for i := 0; i < len(groupsAfterLeaveList); i++ {
+						gid := groupsAfterLeaveList[i]
+						shardList := mapGidsToShards[gid]
+						//log.Printf("On gid %d, number of shard is: %d, and currentMin is %d", gid, len(shardList), minLength)
 
-					groupToMoveTo := -1 // find a group with smallest size we can move the shard to
-					for gid, shardList := range mapGidsToShards {
-						if len(shardList) <= minLength{
-							minLength = len(shardList)
+						if len(shardList) < minLength {
+							// we attempt to move shard to new gids
+							// if a new gid has shard list size < minimum number of shards we can add to group
+							// we add new shard to that group, regardless of it being newGid or not
 							groupToMoveTo = gid
+							minLength = len(shardList)
 						}
 					}
 
-					// use last shard in the shardsToAllocate to move to new group
-					shardToMoveToNewGroupTo := shardsToAllocate[len(shardsToAllocate) - 1]
+					// use first shard in the sorted shardsToAllocate list to move to new group
+					shardToMoveToNewGroupTo := shardsToAllocate[0]
 
-					// remove the last shard from shardsToAllocate 
-					shardsToAllocate = shardsToAllocate[: len(shardsToAllocate) - 1]
+					// remove the first shard from shardsToAllocate 
+					shardsToAllocate = shardsToAllocate[1: len(shardsToAllocate)]
 
 					// get list to which we move the shard
 					shardListFromGroupToRemoveTo := mapGidsToShards[groupToMoveTo]
@@ -1049,7 +1235,7 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 					mapGidsToShards[groupToMoveTo] = append(shardListFromGroupToRemoveTo, shardToMoveToNewGroupTo)
 				}
 
-				// map shard to gid, we know NShards > number of gids, so will be a many to one mapping
+				
 				for gid, shardList := range mapGidsToShards {
 					for _, shard := range shardList {
 						newConfigShards[shard] = gid
@@ -1064,13 +1250,44 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 
 			}
 
+			groupsAfterLeaveList := make([]int, 0)
+			for gid, _ := range sm.configs[len(sm.configs) - 1].Groups {
+				groupsAfterLeaveList = append(groupsAfterLeaveList, gid)
+			}
+
+			sort.Sort(sort.IntSlice(groupsAfterLeaveList))
+
+			groupsAfterLeave := ""
+			for _, gid := range groupsAfterLeaveList {
+				groupsAfterLeave = groupsAfterLeave + " " + strconv.Itoa(gid)
+			}
+
+			//log.Printf("On ShardMaster %d, version %d, Groups after Leave are : %s",sm.me, newConfigNum, groupsAfterLeave)
+
+			//log.Printf("On ShardMaster %d, version %d, shard assignment after Leave :",sm.me, newConfigNum)
+
+			for _, gid := range groupsAfterLeaveList {
+				shardList := mapGidsToShards[gid]
+				shardString := ""
+				for _, shard := range shardList {
+					shardString = shardString + " " + strconv.Itoa(shard)
+				}
+				//log.Printf("On gid %d, shards are: %s", gid, shardString)
+			}
+
 		}
+
+		
+
+
 		replyToStore.Err = OK
 		
 	} else if op == "Move"{
-
+		
 		shardToMove := operation.Shard
 		gidToMoveTo := operation.GID
+
+		//log.Printf("Shard master %d handling Move request from Client %d with seq_num %d, move shard %d to group %d updating config to version %d", sm.me, Client_Serial_Number, Sequence_Number, shardToMove, gidToMoveTo, latestConfigNum + 1)
 
 		newConfigNum := latestConfigNum + 1
 		newConfigShards := latestConfigShards
@@ -1084,6 +1301,7 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 
 		if !ok {
 			// like there is no such group in the latest config...
+			//log.Printf("Group %d does not exist, so we cannot move shard %d to it", gidToMoveTo, shardToMove)
 			newConfig := Config{}
 			newConfig.Num = newConfigNum
 			newConfig.Shards = newConfigShards
@@ -1092,6 +1310,7 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 
 		} else {
 			// there is such a group in the latest config
+			//log.Printf("Group %d exists, move shard %d to it", gidToMoveTo, shardToMove)
 			newConfigShards[shardToMove] = gidToMoveTo
 
 			newConfig := Config{}
@@ -1104,9 +1323,12 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 		replyToStore.Err = OK
 
 	} else {
+		
 		configNum := operation.Num
 
 		maxConfigNum := len(sm.configs) - 1
+
+		//log.Printf("Shard master %d handling Query request from Client %d with seq_num %d, querying %d, current latest num is %d", sm.me, Client_Serial_Number, Sequence_Number, configNum, maxConfigNum)
 
 		configIndex := -1
 		if configNum == -1 || configNum >= maxConfigNum {
@@ -1129,6 +1351,8 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 	}
 	sm.clients_Info[Client_Serial_Number].Cached_Response[Sequence_Number] = &replyToStore // cache the response in case of handling retry
 	sm.clients_Info[Client_Serial_Number].Last_Processed_Sequence_Number = Sequence_Number	
+
+	//log.Printf("shard master %d finishes handling %s request from client %d with sequence number %d", sm.me, op, Client_Serial_Number, Sequence_Number)
 
 }
 
