@@ -36,6 +36,9 @@ type Err string
 
 type JoinArgs struct {
 	Servers map[int][]string // new GID -> servers mappings
+
+	Client_Serial_Number int64
+	Sequence_Number int
 }
 
 type JoinReply struct {
@@ -45,6 +48,9 @@ type JoinReply struct {
 
 type LeaveArgs struct {
 	GIDs []int
+
+	Client_Serial_Number int64
+	Sequence_Number int
 }
 
 type LeaveReply struct {
@@ -55,6 +61,9 @@ type LeaveReply struct {
 type MoveArgs struct {
 	Shard int
 	GID   int
+
+	Client_Serial_Number int64
+	Sequence_Number int
 }
 
 type MoveReply struct {
@@ -64,6 +73,9 @@ type MoveReply struct {
 
 type QueryArgs struct {
 	Num int // desired config number
+
+	Client_Serial_Number int64
+	Sequence_Number int
 }
 
 type QueryReply struct {
