@@ -583,6 +583,13 @@ func(kv *KVServer) applyOperation(operation Op) {
 		return
 	}
 
+	if Sequence_Number != last_Processed_Sequence_Number + 1 {
+		// to ensure linearizability
+		// only process a request if current request's sequence number is 1 above previous op done on current client
+		return
+	}
+
+
 
 	replyToStore := StoredReply{}
 
