@@ -126,7 +126,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	}
 	
 
-	////log.Printf("This smserver %d has received Join request with sequence number %d from clerk %d", sm.me, Sequence_Number, Client_Serial_Number)
+	//log.Printf("This smserver %d has received Join request with sequence number %d from clerk %d", sm.me, Sequence_Number, Client_Serial_Number)
 
 	if sm.killed() {
 		reply.WrongLeader = true
@@ -186,21 +186,21 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 			}
 			
 			for {
-				////log.Printf("smserver before lock")
+			
 				sm.mu.Lock()
-				////log.Printf("smserver %d putappend locked ", sm.me)
+		
 				if sm.killed() {
 					//log.Printf("This smserver %d has been killed", sm.me)
 					reply.WrongLeader = true
 					return
 				} 
-				////log.Printf("smserver %d putappend GetStateWtf init", sm.me)
+		
 
 				//log.Printf("server %d raft Join lock 2", sm.me)
 				_, isLeader := sm.rf.GetState()
 				//log.Printf("server %d raft Join unlock 2", sm.me)
 			
-				////log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
+			
 				if !isLeader {
 					//log.Printf("This smserver %d has cached result for Join request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 		
@@ -212,12 +212,10 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 					Client_Received_Sequence_Number = client_Info_This.Received_Sequence_Number
 					Client_Last_Processed_Sequence_Number = client_Info_This.Last_Processed_Sequence_Number
 
-					////log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
-
 					if Sequence_Number <= Client_Received_Sequence_Number {
 						// dude the client has already received reply, so that reply is just staled and we don't need to do 
 						// anything about it
-						////log.Printf("smserver %d (term %d) wtf2", sm.me, term)
+						
 						return
 					} else if Sequence_Number <= Client_Last_Processed_Sequence_Number {
 						// good, that means cached reply is still in the dictionary
@@ -231,7 +229,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 						return
 					} else {
 						//log.Printf("This smserver %d does not have cached result for Join request with client: %d, seq_num: %d, keep waiting", sm.me, Client_Serial_Number, Sequence_Number)
-						////log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
+			
 						sm.mu.Unlock()
 					}
 				}
@@ -291,9 +289,6 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 		// due to asychronous network, it is possible that the older request arrives This smserver as result of re routing, but This smserver already 
 		// receives snapshot from previous leader that has handled this request
 	}
-	
-
-	////log.Printf("This smserver %d has received Join request with sequence number %d from clerk %d", sm.me, Sequence_Number, Client_Serial_Number)
 
 	if sm.killed() {
 		reply.WrongLeader = true
@@ -352,21 +347,21 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 			}
 			
 			for {
-				////log.Printf("smserver before lock")
+	
 				sm.mu.Lock()
-				////log.Printf("smserver %d putappend locked ", sm.me)
+
 				if sm.killed() {
 					//log.Printf("This smserver %d has been killed", sm.me)
 					reply.WrongLeader = true
 					return
 				} 
-				////log.Printf("smserver %d putappend GetStateWtf init", sm.me)
+
 
 				//log.Printf("server %d raft Leave lock 2 ", sm.me)
 				_, isLeader := sm.rf.GetState()
 				//log.Printf("server %d raft Leave unlock 2 ", sm.me)
 			
-				////log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
+		
 				if !isLeader {
 					//log.Printf("This smserver %d has cached result for Leave request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 		
@@ -377,8 +372,6 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 
 					Client_Received_Sequence_Number = client_Info_This.Received_Sequence_Number
 					Client_Last_Processed_Sequence_Number = client_Info_This.Last_Processed_Sequence_Number
-
-					////log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
 
 					if Sequence_Number <= Client_Received_Sequence_Number {
 						// dude the client has already received reply, so that reply is just staled and we don't need to do 
@@ -398,7 +391,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 						return
 					} else {
 						//log.Printf("This smserver %d does not have cached result for Leave request with client: %d, seq_num: %d, keep waiting", sm.me, Client_Serial_Number, Sequence_Number)
-						////log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
+			
 						sm.mu.Unlock()
 					}
 				}
@@ -460,7 +453,7 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 	}
 	
 
-	////log.Printf("This smserver %d has received Join request with sequence number %d from clerk %d", sm.me, Sequence_Number, Client_Serial_Number)
+
 
 	if sm.killed() {
 		reply.WrongLeader = true
@@ -520,21 +513,19 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 			}
 			
 			for {
-				////log.Printf("smserver before lock")
+	
 				sm.mu.Lock()
-				////log.Printf("smserver %d putappend locked ", sm.me)
+
 				if sm.killed() {
 					//log.Printf("This smserver %d has been killed", sm.me)
 					reply.WrongLeader = true
 					return
 				} 
-				////log.Printf("smserver %d putappend GetStateWtf init", sm.me)
 
 				//log.Printf("server %d raft Move lock 2", sm.me)
 				_, isLeader := sm.rf.GetState()
 				//log.Printf("server %d raft Move unlock 2", sm.me)
-			
-				////log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
+
 				if !isLeader {
 					//log.Printf("This smserver %d has cached result for Move request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 		
@@ -546,12 +537,9 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 					Client_Received_Sequence_Number = client_Info_This.Received_Sequence_Number
 					Client_Last_Processed_Sequence_Number = client_Info_This.Last_Processed_Sequence_Number
 
-					////log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
-
 					if Sequence_Number <= Client_Received_Sequence_Number {
 						// dude the client has already received reply, so that reply is just staled and we don't need to do 
 						// anything about it
-						////log.Printf("smserver %d (term %d) wtf2", sm.me, term)
 						return
 					} else if Sequence_Number <= Client_Last_Processed_Sequence_Number {
 						// good, that means cached reply is still in the dictionary
@@ -565,7 +553,7 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 						return
 					} else {
 						//log.Printf("This smserver %d does not have cached result for Move request with client: %d, seq_num: %d, keep waiting", sm.me, Client_Serial_Number, Sequence_Number)
-						////log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
+				
 						sm.mu.Unlock()
 					}
 				}
@@ -624,9 +612,6 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 		// due to asychronous network, it is possible that the older request arrives This smserver as result of re routing, but This smserver already 
 		// receives snapshot from previous leader that has handled this request
 	}
-	
-
-	////log.Printf("This smserver %d has received Join request with sequence number %d from clerk %d", sm.me, Sequence_Number, Client_Serial_Number)
 
 	if sm.killed() {
 		reply.WrongLeader = true
@@ -687,21 +672,17 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 			}
 			
 			for {
-				////log.Printf("smserver before lock")
 				sm.mu.Lock()
-				////log.Printf("smserver %d putappend locked ", sm.me)
 				if sm.killed() {
 					//log.Printf("This smserver %d has been killed", sm.me)
 					reply.WrongLeader = true
 					return
 				} 
-				////log.Printf("smserver %d putappend GetStateWtf init", sm.me)
 
 				//log.Printf("server %d raft Query lock 2", sm.me)
 				_, isLeader := sm.rf.GetState()
 				//log.Printf("server %d raft Query unlock 2", sm.me)
-			
-				////log.Printf("smserver %d (term %d) putappend GetStateWtf finished", sm.me, term)
+
 				if !isLeader {
 					//log.Printf("This smserver %d has cached result for Query request client: %d, seq_num: %d but is not a leader", sm.me, Client_Serial_Number, Sequence_Number)
 		
@@ -713,12 +694,9 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 					Client_Received_Sequence_Number = client_Info_This.Received_Sequence_Number
 					Client_Last_Processed_Sequence_Number = client_Info_This.Last_Processed_Sequence_Number
 
-					////log.Printf("smserver %d (term %d), for client %d, putappend task with sequence number %d, Client_Received_Sequence_Number %d, Client_Last_Processed_Sequence_Number %d", sm.me, term, Client_Serial_Number, Sequence_Number, Client_Received_Sequence_Number, Client_Last_Processed_Sequence_Number)
-
 					if Sequence_Number <= Client_Received_Sequence_Number {
 						// dude the client has already received reply, so that reply is just staled and we don't need to do 
 						// anything about it
-						////log.Printf("smserver %d (term %d) wtf2", sm.me, term)
 						return
 					} else if Sequence_Number <= Client_Last_Processed_Sequence_Number {
 						// good, that means cached reply is still in the dictionary
@@ -733,7 +711,6 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 						return
 					} else {
 						//log.Printf("This smserver %d does not have cached result for Query request with client: %d, seq_num: %d, keep waiting", sm.me, Client_Serial_Number, Sequence_Number)
-						////log.Printf("smserver %d (term %d) putappend Unlocked", sm.me, term)
 						sm.mu.Unlock()
 					}
 				}
@@ -923,9 +900,9 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 			minNumberOfShardInGroup := int(math.Floor(float64(NShards) / float64(numOfGroup)))
 
 			for {
-				////log.Printf("NShards is %d, nunOfGroup is %d", NShards, numOfGroup)
-				////log.Printf("maxNumberOfShardInGroup is %d, minNumberOfShardInGroup is %d", maxNumberOfShardInGroup, minNumberOfShardInGroup)
-				////log.Printf("Shardmaster %d looping", sm.me)
+				//log.Printf("NShards is %d, nunOfGroup is %d", NShards, numOfGroup)
+				//log.Printf("maxNumberOfShardInGroup is %d, minNumberOfShardInGroup is %d", maxNumberOfShardInGroup, minNumberOfShardInGroup)
+				//log.Printf("Shardmaster %d looping", sm.me)
 				groupToRemoveFrom := -1
 
 				for i := 0; i < len(totalGroup); i++ {
@@ -952,7 +929,7 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 					}
 				}
 
-				////log.Printf("first, groupToRemoveFrom is %d, and groupToMoveTo is %d",groupToRemoveFrom, groupToMoveTo)
+				//log.Printf("first, groupToRemoveFrom is %d, and groupToMoveTo is %d",groupToRemoveFrom, groupToMoveTo)
 
 
 
@@ -1010,7 +987,7 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 
 				}
 
-				////log.Printf("groupToRemoveFrom is %d, and groupToMoveTo is %d",groupToRemoveFrom, groupToMoveTo)
+				//log.Printf("groupToRemoveFrom is %d, and groupToMoveTo is %d",groupToRemoveFrom, groupToMoveTo)
 				// get list from which we get a shard to move to new group
 				shardListFromGroupToRemoveFrom := mapGidsToShards[groupToRemoveFrom]
 
@@ -1276,9 +1253,6 @@ func(sm *ShardMaster) applyOperation(operation Op) {
 			}
 
 		}
-
-		
-
 
 		replyToStore.Err = OK
 		
