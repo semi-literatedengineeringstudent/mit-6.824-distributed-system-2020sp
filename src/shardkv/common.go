@@ -14,7 +14,9 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
-	ErrMigrationNotStarted = "ErrMigrationNotStarted" // returned when server leader for GID whose data is requested has not had config aggrement with its raft peers in the group
+	ErrMigrationInconsistent = "ErrMigrationInconsistent" 
+	// meanning the server from whom current server asks shard is not in same stage of migration therefore cannot migrate shard to the current server
+	// more specificially, at least one of old config number and target config number are different 
 
 	Operating = 0 // not migrating, means the server can operate
 	NeedMigration = 1 // servers reach agreement to migrate but migration has not started yet
@@ -70,8 +72,20 @@ type GetReply struct {
 
 type RequestShardsArgs struct {
 	ShardsRequested []int // a list of shards requested by the server
-	Num int 
+	
+	Num_Target int 
 	// the config number of the target config the server tries to migrate to
 	// this is to ensure both Gid leader that requesting data and the Gid leader that is returning data are migrating to the same config
 	// at the moment we assume migration for entire server group would be continuous-- no gap in migration, not migrate from i to version > i + 1
+
+	Num_Old int
+	// the config number of the old branch from which we migrate to target
+	// the config of old branch contains info as to which branch the server asks shard from
+	// this is to ensure both server are migrating from same old config to same target config
+}
+
+type RequestShardsReply struct {
+	Err string // error of reply
+
+	Data map[int]map[string]string // the shard data the other server returns to the current server
 }

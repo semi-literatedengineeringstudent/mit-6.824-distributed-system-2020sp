@@ -7,6 +7,8 @@ import "../raft"
 import "sync"
 import "../labgob"
 
+import "time"
+
 
 
 type Op struct {
@@ -35,9 +37,11 @@ type Op struct {
 	Shards [NShards]int     // shard -> gid
 	Groups map[int][]string // gid -> servers[]*/
 
-	Target_Config Config // if action is to update config, this is thge config the server tries to update to
+	Target_Config Config // if action is to update config, this is the config the server cluster tries to update to
+
 	ShardDb map[int]map[string]string // if action is to opdate shard db leader send to followers after aggrement, this will be
 	// a subset of db the server will possess following completion of migration
+	ShardDb_Config_Num int // the config version number corresponding to shardDb the server tries to sync its state machine with
 }
 
 type Client struct {
@@ -83,11 +87,20 @@ type ShardKV struct {
 	indexBuffer []int // stores index corresponding to operations in operationBuffer
 	termBuffer []int // stores term corresponding to operations in operarionBuffer
 
-	current_Config Config // the current shard/server config 
+	old_Config Config // the old shard/server config we use to find target gid groups form whom we acquire shard data
 
 	old_Db map[int]map[string]string // db snapshot at the moment when config change takes place, used for data migration opon receiving RequestShardRPC
 
-	//target_Config Config // if migration starts, this is the config current server tries to reach
+	current_Config Config // the config the server either possess or is trying to possess, i.e the most updated config the server knows
+	migration_started bool // used by leader to indicate if, there exists version number disparity between old config and 
+	// new config, the leader restart migration process. This is useful because it is possible that old leader dead and new leader
+	// need to detect that migration has not completed and request shards not yet received by the leader server 
+	// reset to false everytime a server receives a config from raft aggrement
+	// only current leader will set this to true when migration starts
+	// any another server, if the previous leader dies and has been elected as leader, sees the migration_started = false
+	// it will find shards not in current db and send request to the servers possessing them in old config
+
+	
 
 	//server_State int // current state of server.
 
@@ -100,7 +113,7 @@ type StoredReply struct {
 	Value string
 }
 
-func (kv *KVServer) tryInitSnapShot() {
+func (kv *ShardKV) tryInitSnapShot() {
 	_, isLeader := kv.rf.GetState()
 
 	if !isLeader {
@@ -131,7 +144,7 @@ func (kv *KVServer) tryInitSnapShot() {
 }
 
 
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
@@ -312,7 +325,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 }
 
-func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
@@ -501,7 +514,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 }
 
 //
-// the tester calls Kill() when a KVServer instance won't
+// the tester calls Kill() when a ShardKV instance won't
 // be needed again. for your convenience, we supply
 // code to set rf.dead (without needing a lock),
 // and a killed() method to test rf.dead in
@@ -510,17 +523,17 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // about this, but it may be convenient (for example)
 // to suppress debug output from a Kill()ed instance.
 //
-func (kv *KVServer) Kill() {
+func (kv *ShardKV) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
 }
 
-func (kv *KVServer) killed() bool {
+func (kv *ShardKV) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
 }
-func (kv *KVServer) emptyOperationBuffer() {
+func (kv *ShardKV) emptyOperationBuffer() {
 	if (len(kv.operationBuffer) == 0) {
 		//nothing in the buffer...
 		return
@@ -559,7 +572,7 @@ func (kv *KVServer) emptyOperationBuffer() {
 	kv.termBuffer = make([]int, 0)
 	return
 }
-func(kv *KVServer) applyOperation(operation Op) {
+func(kv *ShardKV) applyOperation(operation Op) {
 
 	Sequence_Number := operation.Sequence_Number
 	Client_Serial_Number := operation.Client_Serial_Number
@@ -640,7 +653,7 @@ func(kv *KVServer) applyOperation(operation Op) {
 }
 // kv server changes its database state according to committed commands
 // as well as handle and cache requests related to the committed commands
-func (kv *KVServer) handleRequest(applyMessage raft.ApplyMsg) {
+func (kv *ShardKV) handleRequest(applyMessage raft.ApplyMsg) {
 
 	if applyMessage.CommandValid {
 		commandIndex := applyMessage.CommandIndex
@@ -688,6 +701,200 @@ func (kv *KVServer) handleRequest(applyMessage raft.ApplyMsg) {
 	
 }
 
+func (kv *ShardKV) MigratingShards() {
+	
+	oldConfig := kv.old_Config
+
+	targetConfig := kv.current_Config
+
+	/*if (oldConfig.Num == 0) {
+		// that we shart from scratch
+		for shard, gid := range targetConfig.Shards {
+			if gid == kv.gid {
+				kv.db[shard] = make(map[string]string)
+			}
+		}
+		return
+	}*/ 
+
+
+	// lets handle this edge case in applyAction
+	// let this method solely focus on shard migration when config change requires so
+
+
+	// obtain shards this server needs in new config
+
+	for i := 0; i < len(kv.old_Config.Shards); i++ {
+		if kv.old_Config.Shards[i] == kv.current_Config.Shards[i] && kv.oldConfig.Shards[i] == kv.gid {
+			// if a shard was assigned to this server in previous config and is now assigned again to this gid server
+			shardDb := kv.old_Db[i]
+
+			_, ok := kv.db[i]
+
+			if !ok {
+				kv.db[i] = make(map[string]string)
+				// copy the subset of db belonging to that shard from old db ro current db
+				for key, value := range shardDb {
+					kv.db[i][key] = value
+				}
+
+			}
+		}
+	}
+
+	shardsNeeded := make([]int, 0)
+	for shardAssigned, gidAssigned := range targetConfig.Shards {
+		if gidAssigned == kv.gid && kv.oldConfig.Shards[gidAssigned] != kv.gid {
+			// if the shard is assigned to this server in target config and was not assigned to this server in old config
+			_, ok := kv.db[gidAssigned]
+			// find if current data base already received shard Db from raft aggrement
+			if !ok {
+				shardsNeeded = append(shardsNeeded, shardAssigned)
+			}
+		}
+	}
+
+	gidToShardsMap := make(map[int][]int)
+
+	gidToServersMap := make(map[int][]string)
+	for _, shardNeeded := range shardsNeeded {
+		gidToRequestFrom := oldConfig.Shards[shardNeeded]
+
+		shardsRequested, ok := gidToShardsMap[gidToRequestFrom]
+		if !ok {
+			gidToShardsMap[gidToRequestFrom] = make([]int, 0)
+			gidToShardsMap[gidToRequestFrom] = append(gidToShardsMap[gidToRequestFrom], shardNeeded)
+
+			gidToServersMap[gidToRequestFrom] = targetConfig.Groups[gidToRequestFrom]
+
+		} else {
+			gidToShardsMap[gidToRequestFrom] = append(gidToShardsMap[gidToRequestFrom], shardNeeded)
+		}
+	}
+
+	_, isLeader := kv.rf.GetState()
+	numOld := oldConfig.Num
+	numTarget := targetConfig.Num
+
+	if isLeader {
+		kv.migration_started = true
+		for gid, shardsFromTheGid := range gidToShardsMap {
+			gidToRequestFrom := gid
+			shardsToRequestFromGid := shardsFromTheGid
+
+			serverList := gidToServersMap[gidToRequestFrom]
+
+			go func(gidToRequestFrom int, shardsToRequestFromGid []int, serverList []string, numOld int, numTarget int, kv *ShardKV) {
+				args := RequestShardsArgs{}
+				args.Num_Target = numTarget
+				args.Num_Old = numOld
+				args.ShardsRequested = shardsToRequestFromGid
+
+				// iterate through serverList to get shard from leader server
+				for si := 0; si < len(serverList); si++ {
+					srv := ck.make_end(serverList[si])
+					reply := RequestShardsReply{}
+
+					ok := srv.Call("ShardKV.RequestShards", &args, &reply)
+
+					if ok && reply.Err == OK {
+
+						opToRaft := Op{}
+						opToRaft.Operation = "Sync_Shard_Db"
+						opToRaft.ShardDb = make(map[int]map[string]string)
+						for shard, shardDb := range reply.Data {
+							opToRaft.ShardDb[shard] = make(map[string]string)
+							for key, value := range shardDb {
+								opToRaft.ShardDb[shard][key] = value 
+							}
+						}
+						opToRaft.ShardDb_Config_Num = numTarget
+						kv.mu.Lock()
+						// start sync on the shard db
+						_, _, _, _ := kv.rf.StartQuick(opToRaft)
+						kv.mu.UnLock()
+						return
+					} else if ok && reply.Err = ErrMigrationInconsistent {
+
+						// then we have screwed because the entire system would be broken if a gid group just fail to catch up
+						// with the rest of the gid groups
+
+						// or the other gid group simply did not start migration
+						// this way the other group is still possessing the shard and operating on it,
+						// thus we should not do anything about it
+						
+
+					}
+				}
+
+				
+
+				
+
+
+
+
+			}(gidToRequestFrom, shardsToRequestFromGid, serverList, numOld, numTarget, kv)
+	
+		}
+
+	}
+
+	
+}
+
+func (kv *ShardKV) RequestShards(args *RequestShardsArgs, reply *RequestShardsReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	_, isLeader := kv.rf.GetState()
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	if args.Num_Old != kv.old_Config.Num || args.Num_Target != kv.current_Config.Num {
+		reply.Err = ErrMigrationInconsistent
+		return
+	}
+	reply.Data = make(map[int]map[string]string)
+	for _, shard := range args.ShardsRequested {
+		reply.Data[shard] = make(map[string]string)
+		for key, value := range kv.old_Db[shard] {
+			reply.Data[shard][key] = value
+		}
+	}
+	reply.Err = OK
+	return
+}
+
+func (kv *ShardKV) fetchNewConfig() {
+	for {
+		kv.mu.Lock()
+		newConfig := kv.mck.Query(-1)
+		if (newConfig.Num > kv.current_Config.Num) {
+			// if current server is leader and the new config has higher version number
+			opToRaft := Op{}
+			opToRaft.Operation = "Update_Config"
+			configToAggreOn := Config{}
+			configToAggreOn.Num = newConfig.Num
+			configToAggreOn.Shards = newConfig.Shards
+			configToAggreOn.Groups = make(map[int][string])
+			for gid, group := range newConfig.Groups {
+				configToAggreOn[gid] = group
+			}
+
+			opToRaft.Target_Config = configToAggreOn
+
+			_, _, _, _ := kv.rf.StartQuick(opToRaft)
+			// this is to ensure that the config change is based on quorum consensus 
+
+
+		}
+		kv.mu.Unlock()
+
+		time.Sleep(75 * time.Millisecond)
+	}
+}
+
 
 //
 // servers[] contains the ports of the servers in this group.
@@ -732,10 +939,14 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// Your initialization code here.
 
 	// Use something like this to talk to the shardmaster:
-	// kv.mck = shardmaster.MakeClerk(kv.masters)
+
+	kv.mck = shardmaster.MakeClerk(kv.masters)
+	kv.current_Config = kv.mck.Query(-1)
+
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.MakeWithSnapshot(servers, me, persister, kv.applyCh, maxraftstate)
+	 
 
 
 	if maxraftstate != -1 {
@@ -775,7 +986,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.indexBuffer = make([]int, 0)
 	kv.termBuffer = make([]int, 0)
 
-	go func(kv *KVServer) {		
+	go func(kv *ShardKV) {	
+		go rf.fetchNewConfig()	
 		for applyMessage := range kv.applyCh {
 			kv.mu.Lock()
 			//log.Printf("kvserver %d Locked", kv.me)
@@ -792,7 +1004,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 						snapShotSize := kv.rf.GetRaftStateSize()
 					
 						if snapShotSize >= kv.maxraftstate {
-							//log.Printf("kvserver %d make snapshot in StartKVServer with LastIncludeIndex %d and LastIncludeTerm %d", kv.me, kv.lastIncludedIndex, kv.lastIncludedTerm)
+							//log.Printf("kvserver %d make snapshot in StartShardKV with LastIncludeIndex %d and LastIncludeTerm %d", kv.me, kv.lastIncludedIndex, kv.lastIncludedTerm)
 							kv.tryInitSnapShot()
 						}
 					}
