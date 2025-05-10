@@ -1167,10 +1167,7 @@ func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int,
 	for i := 0; i < numberOfPeers; i++ {
 		serverIndex := i
 		if (serverIndex != leaderIndex) {
-
-
 			go rf.sendInstallSnapshotSingleServer(serverIndex)
-
 		}
 	}
 }
@@ -1648,9 +1645,6 @@ func (rf *Raft) syncCommitIndexAndLastApplied() {
 		} else {
 			rf.lastApplied = rf.current_sentinel_index
 		}
-		
-
-
 
 		//log.Printf("Raft server %d (term %d) finished applying commands from applyStart %d to applyEnd %d", rf.me, rf.currentTerm, applyStart, applyEnd)
 		

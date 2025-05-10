@@ -16,12 +16,20 @@ const (
 	ErrWrongLeader = "ErrWrongLeader"
 	ErrMigrationInconsistent = "ErrMigrationInconsistent" 
 	// meanning the server from whom current server asks shard is not in same stage of migration therefore cannot migrate shard to the current server
-	// more specificially, at least one of old config number and target config number are different 
+	// more specificially, the server receiving request either has smaller version number in shard (its config agreement is not up to date)
+	ErrGarbage = "ErrGarbage" 
+	// meaning the server from whom current server asks shard has received ack signal
+	// so the current server that requests data can just wait until the shard data is received by the server through raft channel
+	ErrPulling = "ErrPulling"
+	// meaning the gid server client requests the data from is the rightful owner of the shard but is still pulling
+	// and thus cannot reply yet, and the client should retry the same gid server 
 
-	Operating = 0 // not migrating, means the server can operate
-	NeedMigration = 1 // servers reach agreement to migrate but migration has not started yet
-	MigratingAsLeader = 2 // this server is the leader of current gid group and is in charge of exchange data with other servers
-	MigratingAsNoneLeader = 3 // this server is not the leader of current gid group and is not responsible for data exchange but is prepared to act as leader to exchange data with other shard servers
+	ErrServerKilled  = "ErrServerKilled"
+
+	Garbage = 0 // indicating the gid server currently not owning the shard, and the rightful owner has the shard so the owner simply cleared the shard
+	Pulling = 1 // indicating the gid server currently owns the shard but does not have it, so it is trying to pull the shard from the rightful owner from previous config
+	Serving = 2 // indicating the gid server currently owns the shard and has pulled it from the owner in previous config, and is now able to serve the data
+	Sending = 3 // indicating the gid server currently not owning the shard, but has not received ack signal from the rightful owner that needs the shard, so the data still persists in the storage
 )
 
 type Err string
@@ -39,6 +47,8 @@ type PutAppendArgs struct {
 
 	Received_Sequence_Number int
 	Sequence_Number int
+
+	Client_Config_Num int
 }
 
 type PutAppendReply struct {
@@ -58,6 +68,8 @@ type GetArgs struct {
 
 	Received_Sequence_Number int
 	Sequence_Number int
+
+	Client_Config_Num int
 }
 
 type GetReply struct {
@@ -70,22 +82,31 @@ type GetReply struct {
 	ServerRole int
 }
 
-type RequestShardsArgs struct {
-	ShardsRequested []int // a list of shards requested by the server
+type FetchShardArgs struct {
+	ShardRequested int // the shard requested by the server requesting
 	
 	Num_Target int 
 	// the config number of the target config the server tries to migrate to
 	// this is to ensure both Gid leader that requesting data and the Gid leader that is returning data are migrating to the same config
 	// at the moment we assume migration for entire server group would be continuous-- no gap in migration, not migrate from i to version > i + 1
 
-	Num_Old int
-	// the config number of the old branch from which we migrate to target
-	// the config of old branch contains info as to which branch the server asks shard from
-	// this is to ensure both server are migrating from same old config to same target config
 }
 
-type RequestShardsReply struct {
+type FetchShardReply struct {
 	Err string // error of reply
 
-	Data map[int]map[string]string // the shard data the other server returns to the current server
+	Data map[string]string // the shard data the other server returns to the current server
+
+}
+
+type AckShardArgs struct {
+	ShardAcked int // the shard that has been received by the server
+
+	Num_Target int
+	// the config number the 
+}
+
+type AckShardReply struct {
+	Err string 
+	// the id of current leader in gid raft cluster
 }

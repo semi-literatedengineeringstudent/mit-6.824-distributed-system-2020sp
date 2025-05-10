@@ -23,3 +23,5 @@ var follower_role int = 2
 var client_wait_time_millisecond int = 2000
 
 var client_wait_time_loop_millisecond int = 100
+
+var config_query_interval_millisecond int = 75
