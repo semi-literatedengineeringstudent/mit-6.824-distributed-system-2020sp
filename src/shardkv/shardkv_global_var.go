@@ -25,3 +25,10 @@ var client_wait_time_millisecond int = 2000
 var client_wait_time_loop_millisecond int = 100
 
 var config_query_interval_millisecond int = 75
+
+var shard_update_check_interval_millisecond int = 5
+
+var shard_update_agreement_interval_millisecond int = 100
+
+
+

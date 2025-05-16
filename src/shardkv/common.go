@@ -49,6 +49,8 @@ type PutAppendArgs struct {
 	Sequence_Number int
 
 	Client_Config_Num int
+
+	Shard int
 }
 
 type PutAppendReply struct {
@@ -58,6 +60,8 @@ type PutAppendReply struct {
 	CurrentLeaderTerm int
 
 	ServerRole int
+
+	Server_Config_Num int
 }
 
 type GetArgs struct {
@@ -70,6 +74,8 @@ type GetArgs struct {
 	Sequence_Number int
 
 	Client_Config_Num int
+
+	Shard int
 }
 
 type GetReply struct {
@@ -80,6 +86,8 @@ type GetReply struct {
 	CurrentLeaderTerm int
 
 	ServerRole int
+
+	Server_Config_Num int
 }
 
 type FetchShardArgs struct {

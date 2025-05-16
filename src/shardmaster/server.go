@@ -173,6 +173,8 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 			
 			//log.Printf("server %d raft start lock", sm.me)
 			_, _, _, isLeader := sm.rf.StartQuick(opToRaft)
+			//log.Printf("Shard master %d starts Join agreement at index %d", sm.me, index)
+
 			//log.Printf("server %d raft start unlock 1", sm.me)
 	
 			if !isLeader {
@@ -339,6 +341,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 			opToRaft.Operation = op
 			//log.Printf("server %d raft Leave start lock ", sm.me)
 			_, _, _, isLeader := sm.rf.StartQuick(opToRaft)
+			//log.Printf("Shard master %d starts Leave agreement at index %d", sm.me, index)
 			//log.Printf("server %d raft Leave start unlock ", sm.me)
 	
 			if !isLeader {
@@ -507,6 +510,7 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 			opToRaft.Operation = op
 			//log.Printf("server %d raft Move start lock 1 ", sm.me)
 			_, _, _, isLeader := sm.rf.StartQuick(opToRaft)
+			//log.Printf("Shard master %d starts Move agreement at index %d", sm.me, index)
 			//log.Printf("server %d raft Move start unlock 1 ", sm.me)
 	
 			if !isLeader {
@@ -674,6 +678,7 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 			
 			//log.Printf("server %d raft Query start lock", sm.me)
 			_, _, _, isLeader := sm.rf.StartQuick(opToRaft)
+			//log.Printf("Shard master %d starts Query agreement at index %d", sm.me, index)
 			//log.Printf("server %d raft Query start unlock", sm.me)
 	
 			if !isLeader {
