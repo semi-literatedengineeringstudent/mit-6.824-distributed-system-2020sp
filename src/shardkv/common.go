@@ -105,6 +105,11 @@ type FetchShardReply struct {
 
 	Data map[string]string // the shard data the other server returns to the current server
 
+	Config_Num int // config number the server that receives request has if we have ErrGarbage or ErrMigrationInconsistent
+
+	State int //state the server that receives request has if we have ErrGarbage or ErrMigrationInconsistent
+
+	CurrentLeaderId int
 }
 
 type AckShardArgs struct {
@@ -117,4 +122,10 @@ type AckShardArgs struct {
 type AckShardReply struct {
 	Err string 
 	// the id of current leader in gid raft cluster
+
+	Config_Num int // config number the server that receives request has if we have ErrGarbage or ErrMigrationInconsistent
+
+	State int //state the server that receives request has if we have ErrGarbage or ErrMigrationInconsistent
+
+	CurrentLeaderId int
 }
