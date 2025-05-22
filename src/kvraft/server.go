@@ -583,6 +583,13 @@ func(kv *KVServer) applyOperation(operation Op) {
 		return
 	}
 
+	if Sequence_Number != last_Processed_Sequence_Number + 1 {
+		// to ensure linearizability
+		// only process a request if current request's sequence number is 1 above previous op done on current client
+		return
+	}
+
+
 
 	replyToStore := StoredReply{}
 
@@ -626,6 +633,7 @@ func (kv *KVServer) handleRequest(applyMessage raft.ApplyMsg) {
 		commandIndex := applyMessage.CommandIndex
 		commandTerm := applyMessage.CommandTerm
 		operation := applyMessage.Command.(Op)
+		//log.Printf("Kvserver %d received operation with commandIndex %d from handleRequest with LastIncludeIndex %d, LastIncludeTerm %d", kv.me, commandIndex, kv.lastIncludedIndex, kv.lastIncludedTerm)
 		if (commandIndex == kv.lastIncludedIndex + 1) {
 			//log.Printf("Kvserver %d applies operation with commandIndex %d from handleRequest with LastIncludeIndex %d, LastIncludeTerm %d", kv.me, commandIndex, kv.lastIncludedIndex, kv.lastIncludedTerm)
 			kv.lastIncludedIndex = commandIndex
