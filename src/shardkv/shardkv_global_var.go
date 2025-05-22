@@ -30,5 +30,8 @@ var shard_update_check_interval_millisecond int = 5
 
 var shard_update_agreement_interval_millisecond int = 100
 
+var not_started int = 0
+var started int = 1
+
 
 

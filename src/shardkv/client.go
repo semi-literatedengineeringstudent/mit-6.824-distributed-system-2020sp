@@ -104,7 +104,7 @@ func (ck *Clerk) Get(key string) string {
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
 					ck.Sequence_Number_Gid[gid] = ck.Sequence_Number_Gid[gid] + 1
-					//log.Printf("Client %d got ErrWrongGroup for Get request with key %s to server %d in groups with gid %d with sequence number %d, Client_Config_Number is %d, Server_Config_Number is %d at shard %d, in case of standalone server, try another one", ck.Client_Serial_Number, key, si, gid, args.Sequence_Number, args.Client_Config_Num, reply.Server_Config_Num, shard)
+					//log.Printf("Client %d got ErrWrongGroup for Get request with key %s to server %d in groups with gid %d with sequence number %d, Client_Config_Number is %d, Server_Config_Number is %d at shard %d", ck.Client_Serial_Number, key, si, gid, args.Sequence_Number, args.Client_Config_Num, reply.Server_Config_Num, shard)
 					continue
 				} 
 				if ok && (reply.Err == ErrWrongLeader) {
@@ -176,7 +176,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
 					ck.Sequence_Number_Gid[gid] = ck.Sequence_Number_Gid[gid] + 1
-					//log.Printf("Client %d got ErrWrongGroup for %s request with key %s and value %s to server %d in groups with gid %d with sequence number %d, Client_Config_Number is %d, Server_Config_Number is %d at shard %d, in case of standalone server we try another one.", ck.Client_Serial_Number, op, key, value, si, gid, args.Sequence_Number, args.Client_Config_Num, reply.Server_Config_Num, shard)
+					//log.Printf("Client %d got ErrWrongGroup for %s request with key %s and value %s to server %d in groups with gid %d with sequence number %d, Client_Config_Number is %d, Server_Config_Number is %d at shard %d", ck.Client_Serial_Number, op, key, value, si, gid, args.Sequence_Number, args.Client_Config_Num, reply.Server_Config_Num, shard)
 					continue
 				}
 				if ok && (reply.Err == ErrWrongLeader) {

@@ -45,7 +45,6 @@ type Op struct {
 	New_Config shardmaster.Config // if action is to update config, this is the config the server cluster tries to update its shards to
 
 	Shard_To_Update Shard // if action is to update a shard, this is the shard this gid server obtained from previous owner
-
 }
 
 type Shard struct {
@@ -54,6 +53,7 @@ type Shard struct {
 	State int // state of shard, could be garbage, pull, serve, send, see shardkv_global_var for specific definition
 	Data map[string]string // the actual state machine of the data
 }
+
 
 type Client struct {
 	Received_Sequence_Number int // highest sequence number of op whose response has been received by the client, 
@@ -103,14 +103,31 @@ type ShardKV struct {
 
 	configs []shardmaster.Config // the queue that contains config that has been agreed upon by quorum of servers through raft
 	
-	gid_leader_id map[int]int // leader of each gid group. This is necessary to expedite shard movement, which 
+	//gid_leader_id map[int]int // leader of each gid group. This is necessary to expedite shard movement, which 
 	// requires communication between leader of current gid group and leader of target gid group
 
-	config_Update_Channels []chan int
+	//config_Update_Channels []chan int
 	// a channel that sends an integer corresponds to version update to shard migration ethod whenever there is 
 	// a new config that raft cluster agrees upon
-	intermediate_Channels []chan int
+
+	//intermediate_Channels []chan int
 	// a chennel that receives an int whenever there is an agreement upon state change of shard during migration
+
+	shardUpdateBuffer [][]Shard  // a list of list, each list contains shard state the shard needs to update to
+
+	shardToSync []Shard // at shardToSync[i], we have shard to agree upon for shard i. once agreement is achieved, we will remove the shard
+
+	shardLastAgreeCommand []Shard // at shardLastAgreeCommand[i], we have the last shard update command we put into raft for agreement
+
+	shardLastAgreeIndex []int // at shardLastAgreeIndex[i] we have the index at which as start agreement for last shardAgree command
+
+	dataChan chan Shard
+
+	shardLocks [shardmaster.NShards] sync.Mutex
+
+	//clientRequestQueue []Op
+
+	//clientRequestLastEmptyTime time.Time
 	
 }
 
@@ -118,6 +135,8 @@ type ShardKV struct {
 type StoredReply struct {
 	Err string
 	Value string
+
+	Server_Config_Num int
 }
 
 func (kv *ShardKV) tryInitSnapShot() {
@@ -131,19 +150,31 @@ func (kv *ShardKV) tryInitSnapShot() {
 		return
 	}
 
+	for i := 0; i < shardmaster.NShards; i++ {
+		kv.shardLocks[i].Lock()
+	}
 	LastIncludedIndex := kv.lastIncludedIndex
 	LastIncludedTerm := kv.lastIncludedTerm
 	//log.Printf("KvServer %d init snapshot with LastIncludedIndex %d, LastIncludedTerm %d", kv.me, LastIncludedIndex, LastIncludedTerm)
 
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
+
 	e.Encode(kv.clients_Info)
 	e.Encode(kv.db)
 	e.Encode(kv.configs)
+	e.Encode(kv.shardUpdateBuffer)
+	e.Encode(kv.shardToSync)
+	e.Encode(kv.shardLastAgreeCommand)
+	e.Encode(kv.shardLastAgreeIndex)
 
 	SnapShotByte := w.Bytes()
 
 	kv.rf.InitInstallSnapshot(LastIncludedIndex, LastIncludedTerm, SnapShotByte)
+
+	for i := 0; i < shardmaster.NShards; i++ {
+		kv.shardLocks[i].Unlock()
+	}
 
 	
 	return
@@ -162,6 +193,8 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	Sequence_Number := args.Sequence_Number
 
 	Client_Config_Num := args.Client_Config_Num
+
+	shard := args.Shard
 
 	client_Info_This, ok := kv.clients_Info[Client_Serial_Number]
 	if !ok {
@@ -234,6 +267,8 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 			reply.CurrentLeaderId = kv.me
 			reply.CurrentLeaderTerm = term
 
+			reply.Server_Config_Num = cachedReply.Server_Config_Num
+
 			//log.Printf("This kvserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, term, key, Client_Serial_Number, Sequence_Number)
 			
 			return
@@ -248,11 +283,29 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 			opToRaft.Operation = "Get"
 
 			opToRaft.Client_Config_Num = Client_Config_Num
+			opToRaft.Shard_Num = shard
 
-			//_, _, isLeader := kv.rf.Start(opToRaft)
+			/*kv.clientRequestQueue = append(kv.clientRequestQueue, opToRaft)
+
+			clientRequestLastEmptyTime :=kv.clientRequestLastEmptyTime
+
+			timeToCheck := (clientRequestLastEmptyTime).Add(time.Duration(200) * time.Millisecond)
+			currentTime := time.Now()
+			if (currentTime.After(timeToCheck)) {
+
+				log.Printf("kvserver %d of gid %d, size of client request queue is %d", kv.me, kv.gid, len(kv.clientRequestQueue))
+				for i := 0; i < len(kv.clientRequestQueue); i++ {
+					kv.rf.StartQuick(kv.clientRequestQueue[i])
+				}
+				kv.clientRequestQueue = make([]Op, 0)
+				kv.clientRequestLastEmptyTime = time.Now()
+			} else {
+				//log.Printf("kvserver %d of gid %d, not handling client request", kv.me, kv.gid)
+			}*/
 	
 			currentLeaderId, index, term, isLeader := kv.rf.StartQuick(opToRaft)
 
+			//log.Printf("kvserver %d of gid %d, start agreement on client get request at index %d", kv.me, kv.gid, index)
 	
 			if index == invalid_index {
 				reply.Err = ErrServerKilled
@@ -264,18 +317,12 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 				reply.CurrentLeaderId, reply.CurrentLeaderTerm = currentLeaderId, term 
 				return
 			} else {
-				/*if kv.maxraftstate != -1 {
 				
-					snapShotSize := kv.rf.GetRaftStateSize()
-				
-					if snapShotSize >= kv.maxraftstate {
-						//log.Printf("kvserver %d make snapshot in Get with LastIncludeIndex %d and LastIncludeTerm %d", kv.me, kv.LastIncludedIndex, kv.LastIncludedTerm)
-						kv.tryInitSnapShot()
-					}
-				}*/
 				//log.Printf("This kvserver %d (term %d) does not have cached result for Get request with key %s and serial number %d and is a  leader, now enqueue", kv.me, term, key, Sequence_Number)
 				kv.mu.Unlock()
 			}
+
+			//kv.mu.Unlock()
 			
 			for {
 				//log.Printf("Kvserver get before lock")
@@ -320,6 +367,8 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 			
 						reply.CurrentLeaderId = kv.me
 						reply.CurrentLeaderTerm = term
+
+						reply.Server_Config_Num = cachedReply.Server_Config_Num
 			
 						//log.Printf("This kvserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, term, key, Client_Serial_Number, Sequence_Number)
 						
@@ -327,8 +376,26 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 					} else {
 						//log.Printf("This kvserver %d (term %d) does not have cached result for Get request with key %s, client: %d, seq_num: %d, keep waiting...", kv.me, term, key, Client_Serial_Number, Sequence_Number)
 						//log.Printf("Kvserver %d (term %d) get Unlocked", kv.me, term)
-						kv.mu.Unlock()
+						//kv.mu.Unlock()
 					}
+
+					/*clientRequestLastEmptyTime :=kv.clientRequestLastEmptyTime
+
+					timeToCheck := (clientRequestLastEmptyTime).Add(time.Duration(200) * time.Millisecond)
+					currentTime := time.Now()
+					if (currentTime.After(timeToCheck)) {
+		
+						log.Printf("kvserver %d of gid %d, size of client request queue is %d", kv.me, kv.gid, len(kv.clientRequestQueue))
+						for i := 0; i < len(kv.clientRequestQueue); i++ {
+							kv.rf.StartQuick(kv.clientRequestQueue[i])
+						}
+						kv.clientRequestQueue = make([]Op, 0)
+						kv.clientRequestLastEmptyTime = time.Now()
+					} else {
+						//log.Printf("kvserver %d of gid %d, not handling client request", kv.me, kv.gid)
+					}*/
+
+					kv.mu.Unlock()
 				}
 				
 				time.Sleep(time.Duration(kvserver_loop_wait_time_millisecond) * time.Millisecond)
@@ -349,6 +416,8 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	Sequence_Number := args.Sequence_Number
 
 	Client_Config_Num := args.Client_Config_Num
+
+	shard := args.Shard
 
 	client_Info_This, ok := kv.clients_Info[Client_Serial_Number]
 	if !ok {
@@ -421,6 +490,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 			reply.CurrentLeaderId = kv.me
 			reply.CurrentLeaderTerm = term
+			reply.Server_Config_Num = cachedReply.Server_Config_Num
 
 			//log.Printf("This kvserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, term, key, Client_Serial_Number, Sequence_Number)
 			
@@ -439,8 +509,27 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			opToRaft.Client_Config_Num = Client_Config_Num
 
 			//_, _, isLeader := kv.rf.Start(opToRaft)
+			opToRaft.Shard_Num = shard
+
+			/*kv.clientRequestQueue = append(kv.clientRequestQueue, opToRaft)
+
+			clientRequestLastEmptyTime := kv.clientRequestLastEmptyTime
+
+			timeToCheck := (clientRequestLastEmptyTime).Add(time.Duration(200) * time.Millisecond)
+			currentTime := time.Now()
+			if (currentTime.After(timeToCheck)) {
+				log.Printf("kvserver %d of gid %d, size of client request queue is %d", kv.me, kv.gid, len(kv.clientRequestQueue))
+				for i := 0; i < len(kv.clientRequestQueue); i++ {
+					kv.rf.StartQuick(kv.clientRequestQueue[i])
+				}
+				kv.clientRequestQueue = make([]Op, 0)
+				kv.clientRequestLastEmptyTime = time.Now()
+			} else {
+				//log.Printf("kvserver %d of gid %d, not handling client request", kv.me, kv.gid)
+			}*/
 	
 			currentLeaderId, index, term, isLeader := kv.rf.StartQuick(opToRaft)
+			//log.Printf("kvserver %d of gid %d, start agreement on client putappend request at index %d", kv.me, kv.gid, index)
 	
 
 			if index == invalid_index {
@@ -453,18 +542,12 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				reply.CurrentLeaderId, reply.CurrentLeaderTerm = currentLeaderId, term
 				return
 			} else {
-				/*if kv.maxraftstate != -1 {
-				
-					snapShotSize := kv.rf.GetRaftStateSize()
-				
-					if snapShotSize >= kv.maxraftstate {
-						//log.Printf("kvserver %d make snapshot in PutAppend with LastIncludeIndex %d and LastIncludeTerm %d", kv.me, kv.LastIncludedIndex, kv.LastIncludedTerm)
-						kv.tryInitSnapShot()
-					}
-				}*/
+	
 				//log.Printf("This kvserver %d (term %d) does not have cached result for Get request with key %s and serial number %d but is not leader, now enqueue", kv.me, term, key, Sequence_Number)
 				kv.mu.Unlock()
 			}
+
+			//kv.mu.Unlock()
 			
 			for {
 
@@ -512,6 +595,8 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			
 						reply.CurrentLeaderId = kv.me
 						reply.CurrentLeaderTerm = term
+
+						reply.Server_Config_Num = cachedReply.Server_Config_Num
 			
 						//log.Printf("This kvserver %d (term %d) has cached result for Get request with key %s, client: %d, seq_num: %d", kv.me, term, key, Client_Serial_Number, Sequence_Number)
 						
@@ -519,8 +604,25 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 					} else {
 						//log.Printf("This kvserver %d (term %d) does not cached result for Get request with key %s, client: %d, seq_num: %d, keep waiting...", kv.me, term, key, Client_Serial_Number, Sequence_Number)
 						//log.Printf("Kvserver %d (term %d) putappend Unlocked", kv.me, term)
-						kv.mu.Unlock()
+						//kv.mu.Unlock()
 					}
+					/*clientRequestLastEmptyTime :=kv.clientRequestLastEmptyTime
+
+					timeToCheck := (clientRequestLastEmptyTime).Add(time.Duration(200) * time.Millisecond)
+					currentTime := time.Now()
+					if (currentTime.After(timeToCheck)) {
+		
+						log.Printf("kvserver %d of gid %d, size of client request queue is %d", kv.me, kv.gid, len(kv.clientRequestQueue))
+						for i := 0; i < len(kv.clientRequestQueue); i++ {
+							kv.rf.StartQuick(kv.clientRequestQueue[i])
+						}
+						kv.clientRequestQueue = make([]Op, 0)
+						kv.clientRequestLastEmptyTime = time.Now()
+					} else {
+						//log.Printf("kvserver %d of gid %d, not handling client request", kv.me, kv.gid)
+					}*/
+
+					kv.mu.Unlock()
 				}
 				
 				time.Sleep(time.Duration(kvserver_loop_wait_time_millisecond) * time.Millisecond)
@@ -617,69 +719,64 @@ func copyConfig(configToCopy shardmaster.Config) shardmaster.Config{
 
 }
 
-func updateSucceed(currentShard Shard, shardToUpdate Shard) bool{
-	if currentShard.Config_Num > shardToUpdate.Config_Num {
-		return true
-	}
-	if currentShard.Config_Num == shardToUpdate.Config_Num {
-		if currentShard.State == shardToUpdate.State {
-			return true
-		} else {
-			if (currentShard.State == Serving && shardToUpdate.State == Pulling) ||
-			(currentShard.State == Garbage && shardToUpdate.State == Sending) {
-				return true
-			}
-		}
-	}
-	return false
-}
+func (kv *ShardKV) obtainData(shardRequested int, newVersionNum int, previousOwnerGroup []string, previousOwnerGid int) {
 
-func (kv *ShardKV) syncShardMessageUntilCommit(shardToUpdate Shard) {
 
-	counter := 0
+	args := FetchShardArgs{}
+	args.ShardRequested = shardRequested
+	args.Num_Target = newVersionNum
+
+	replyToUse := FetchShardReply{}
+	log.Printf("kvserver %d of gid %d, shard %d starts fetching data from previous owner %d for migrating from Garbage in version %d to Serving in version %d", kv.me, kv.gid, shardRequested, previousOwnerGid, newVersionNum - 1, newVersionNum)
+
 	for {
-		kv.mu.Lock()
-
-		if updateSucceed(copyShard(kv.db[shardToUpdate.Shard_Num]), copyShard(shardToUpdate)) {
-			kv.mu.Unlock()
-			return
-		} else {
-			if (counter == shard_update_agreement_interval_millisecond) {
-				_, isLeader := kv.rf.GetState()
-				if (isLeader){
-					updateShardOp := Op{}
-					updateShardOp.Operation = "Update_Shard"
-					updateShardOp.Shard_To_Update = copyShard(shardToUpdate)
-					_, index, _, _ := kv.rf.StartQuick(updateShardOp)
-					log.Printf("On Server %d of gid %d, Shard %d not finished migrate to version %d with state %s in last %d milliseconds, restart aggrement at index %d", kv.me, kv.gid, shardToUpdate.Shard_Num, shardToUpdate.Config_Num,stateIntToString(shardToUpdate.State), shard_update_agreement_interval_millisecond, index)
-
+		for si := 0; si < len(previousOwnerGroup); si++ {
+			srv := kv.make_end(previousOwnerGroup[si])
+			var reply FetchShardReply
+			ok := srv.Call("ShardKV.FetchShard", &args, &reply)
+			if ok && (reply.Err == OK) {
+				replyToUse.Err = reply.Err
+				replyToUse.Data = make(map[string]string)
+				for key, value := range reply.Data {
+					replyToUse.Data[key] = value
 				}
-				counter = 0
+				log.Printf("kvserver %d of gid %d, shard %d successfully fetched data from previous owner %d from server %d for migrating from Garbage in version %d to Serving in version %d", kv.me, kv.gid, shardRequested, previousOwnerGid, si, newVersionNum - 1, newVersionNum)
 
+				shardToUpdate := Shard{}
+				shardToUpdate.Shard_Num = shardRequested
+				shardToUpdate.Config_Num = newVersionNum
+				shardToUpdate.State = Serving
+				shardToUpdate.Data = replyToUse.Data
+
+				kv.dataChan <- shardToUpdate
+				log.Printf("kvserver %d of gid %d, shard %d pushed fetched data from previous owner %d from server %d for migrating from Garbage in version %d to Serving in version %d into the datachan", kv.me, kv.gid, shardRequested, previousOwnerGid, si, newVersionNum - 1, newVersionNum)
+
+				return 
+			} else if ok && (reply.Err == ErrMigrationInconsistent) {
+				// the other server is not up to date and cannot serve the data
+				//log.Printf("kvserver %d of gid %d, shard %d try fetching data from previous owner %d from server %d for migrating from Garbage in version %d to Serving in version %d, but get ErrMigrationInconsistent, previous owner has Shard config %d and Shard state %s, in case of stand along leader, try a different server after a short wait", kv.me, kv.gid, shardRequested, previousOwnerGid, si, newVersionNum - 1, newVersionNum, reply.Config_Num, stateIntToString(reply.State))
+				time.Sleep(time.Duration(kvserver_loop_wait_time_millisecond) * time.Millisecond)
+				// break inner loop and retry after wait for 5ms
+				continue 
+			} else if ok && (reply.Err == ErrGarbage) {
+				// dude the majority of server has already started serving and 
+				// the previous owner already marked the data garbage...
+				replyToUse.Err = reply.Err
+				//log.Printf("kvserver %d of gid %d, shard %d has already been marked Garbage from previous owner %d from server %d for migrating from Garbage in version %d to Serving in version %d", kv.me, kv.gid, shardRequested, previousOwnerGid, si, newVersionNum - 1, newVersionNum)
+				return 
+			} else if ok && (reply.Err == ErrWrongLeader){
+				// must be ErrWrongLeader
+				// continue the inner loop to try another server
+				//log.Printf("kvserver %d of gid %d, shard %d try fetching data from previous owner %d from server %d for migrating from Garbage in version %d to Serving in version %d, but get ErrWrongLeader, currentLeader is %d, try a different server", kv.me, kv.gid, shardRequested, previousOwnerGid, si, newVersionNum - 1, newVersionNum, reply.CurrentLeaderId)
+				continue
+			} else {
+				//not receive reply possibly due to network connection issue, so we just try another server
+				log.Printf("kvserver %d of gid %d, shard %d try fetching data from previous owner %d from server %d for migrating from Garbage in version %d to Serving in version %d, but did not receive reply possibily due to network connection issue", kv.me, kv.gid, shardRequested, previousOwnerGid, si, newVersionNum - 1, newVersionNum)
+				continue
 			}
-			
-			kv.mu.Unlock()
-			
 		}
-		counter = counter + shard_update_check_interval_millisecond
-
-		time.Sleep(time.Duration(shard_update_check_interval_millisecond) * time.Millisecond)
 	}
-}
 
-func (kv *ShardKV) garbageToGarbage(shardNum int, newVersionNum int) {
-	kv.mu.Lock()
-	log.Printf("On Server %d of gid %d, shard %d starts migrating from Garbage in version %d to Garbage in version %d", kv.me, kv.gid, shardNum, newVersionNum - 1, newVersionNum)
-	shardToUpdate := copyShard(kv.db[shardNum])
-	shardToUpdate.Config_Num = newVersionNum
-
-	kv.mu.Unlock()
-
-	kv.syncShardMessageUntilCommit(shardToUpdate)
-
-	//<- intermediate_Channel
-
-	log.Printf("On Server %d of gid %d, shard %d finishes migrating from Garbage in version %d to Garbage in version %d", kv.me, kv.gid, shardNum, newVersionNum - 1, newVersionNum)
 }
 
 func (kv *ShardKV) sendAckSignal(shardAcked int, num_Target int, previousOwnerGroup []string, previousOwnerGid int) {
@@ -695,216 +792,37 @@ func (kv *ShardKV) sendAckSignal(shardAcked int, num_Target int, previousOwnerGr
 			var reply AckShardReply
 			ok := srv.Call("ShardKV.AckShard", &args, &reply)
 			if ok && (reply.Err == OK) {
+				log.Printf("Server %d of gid %d successfully sending ack signal for shard %d to group with gid %d from server %d for migration from version %d to version %d", kv.me, kv.gid, shardAcked, previousOwnerGid, si, num_Target - 1, num_Target)
 				return
 			} else if ok && (reply.Err == ErrMigrationInconsistent) {
 				// the other server is not up to date and cannot serve the data
+				//log.Printf("Server %d of gid %d try sending ack signal for shard %d to group with gid %d from server %d for migration from version %d to version %d but get ErrMigrationInconsistent previous owner shard config number is %d, shard state is %s, in case of stand along leader, just try a different server after a short wait...", kv.me, kv.gid, shardAcked, previousOwnerGid, si, num_Target - 1, num_Target, reply.Config_Num, stateIntToString(reply.State))
 				time.Sleep(time.Duration(kvserver_loop_wait_time_millisecond) * time.Millisecond)
+
 				// break inner loop and retry after wait for 5ms
 				// but, this should never happen... like
 				// we won't send ack without acquiring the data from target server and start serving 
 				// so just a precaution...
-				break
+				continue
 			} else if ok && (reply.Err == ErrGarbage) {
 				// dude the majority of server has already started serving and 
 				// the previous owner already marked the data garbage...
+				//log.Printf("Server %d of gid %d try sending ack signal for shard %d to group with gid %d from server %d for migration from version %d to version %d but get ErrGarbage, meaning the shard has already been marked garbage, previous owner shard config number is %d, shard state is %s", kv.me, kv.gid, shardAcked, previousOwnerGid, si, num_Target - 1, num_Target, reply.Config_Num, stateIntToString(reply.State))
 				return
-			} else if ok && (reply.Err == ErrWrongGroup){
-				// must be ErrWrongLeader
-				// continue the inner loop to try another server
-				continue
-			} else {
-				//not receive reply possibly due to network connection issue, so we just try another server
-				continue
-			}
-		}
-	}
-
-
-}
-
-
-
-func (kv *ShardKV) garbageToServing(shardNum int, newVersionNum int) {
-
-	kv.mu.Lock()
-	shardToUpdate := copyShard(kv.db[shardNum])
-	shardToUpdate.Config_Num = newVersionNum
-	shardToUpdate.State = Pulling
-	log.Printf("On Server %d of gid %d, shard %d starts migrating from Garbage in version %d to Serving in version %d", kv.me, kv.gid, shardNum, newVersionNum - 1, newVersionNum)
-
-	kv.mu.Unlock()
-
-	kv.syncShardMessageUntilCommit(shardToUpdate)
-
-	//<- intermediate_Channel
-	log.Printf("On Server %d of gid %d, shard %d finished Pulling agreement migrating from Garbage in version %d to Serving in version %d", kv.me, kv.gid, shardNum, newVersionNum - 1, newVersionNum)
-	
-	kv.mu.Lock()
-	previousOwnerGid := kv.configs[newVersionNum - 1].Shards[shardNum]
-	previousOwnerGroup := kv.configs[newVersionNum - 1].Groups[previousOwnerGid]
-
-	args := FetchShardArgs{}
-	args.ShardRequested = shardNum
-	args.Num_Target = newVersionNum
-
-	replyToUse := FetchShardReply{}
-	log.Printf("On Server %d of gid %d, shard %d starts fetching data from previous owner %d for migrating from Garbage in version %d to Serving in version %d", kv.me, kv.gid, shardNum, previousOwnerGid, newVersionNum - 1, newVersionNum)
-	kv.mu.Unlock()
-
-	outerLoop:
-	for {
-		for si := 0; si < len(previousOwnerGroup); si++ {
-			srv := kv.make_end(previousOwnerGroup[si])
-			var reply FetchShardReply
-			ok := srv.Call("ShardKV.FetchShard", &args, &reply)
-			if ok && (reply.Err == OK) {
-				replyToUse.Err = reply.Err
-				replyToUse.Data = make(map[string]string)
-				for key, value := range reply.Data {
-					replyToUse.Data[key] = value
-				}
-				break outerLoop
-			} else if ok && (reply.Err == ErrMigrationInconsistent) {
-				// the other server is not up to date and cannot serve the data
-				time.Sleep(time.Duration(kvserver_loop_wait_time_millisecond) * time.Millisecond)
-				// break inner loop and retry after wait for 5ms
-				break
-			} else if ok && (reply.Err == ErrGarbage) {
-				// dude the majority of server has already started serving and 
-				// the previous owner already marked the data garbage...
-				replyToUse.Err = reply.Err
-				break outerLoop
 			} else if ok && (reply.Err == ErrWrongLeader){
 				// must be ErrWrongLeader
 				// continue the inner loop to try another server
+				//log.Printf("Server %d of gid %d try sending ack signal for shard %d to group with gid %d from server %d for migration from version %d to version %d but get ErrWrongLeader, current leader is %d, try a different server", kv.me, kv.gid, shardAcked, previousOwnerGid, si, num_Target - 1, num_Target, reply.CurrentLeaderId)
 				continue
 			} else {
 				//not receive reply possibly due to network connection issue, so we just try another server
+				//log.Printf("Server %d of gid %d try sending ack signal for shard %d to group with gid %d from server %d for migration from version %d to version %d but did not receive reply due to network connection issue, retry with another server, try a different server", kv.me, kv.gid, shardAcked, previousOwnerGid, si, num_Target - 1, num_Target)
 				continue
 			}
 		}
 	}
 
-	if replyToUse.Err == ErrGarbage {
-		log.Printf("On Server %d of gid %d, shard %d has already been marked Garbage from previous owner %d for migrating from Garbage in version %d to Serving in version %d", kv.me, kv.gid, shardNum, previousOwnerGid, newVersionNum - 1, newVersionNum)
-		// meaning we should already have served the data
-		// and the previous owner has already marked garbage
-		return
-	} else {
-		shardToUpdate := Shard{}
-		shardToUpdate.Shard_Num = shardNum
-		shardToUpdate.Config_Num = newVersionNum
-		shardToUpdate.State = Serving
-		shardToUpdate.Data = replyToUse.Data
-		log.Printf("On Server %d of gid %d, shard %d successfully fetched data from previous owner %d for migrating from Garbage in version %d to Serving in version %d, now starts aggrement", kv.me, kv.gid, shardNum, previousOwnerGid, newVersionNum - 1, newVersionNum)
 
-		kv.syncShardMessageUntilCommit(shardToUpdate)
-	
-		//<- intermediate_Channel
-
-		log.Printf("On Server %d of gid %d, shard %d finished migrating from Garbage in version %d to Serving in version %d", kv.me, kv.gid, shardNum, newVersionNum - 1, newVersionNum)
-		go kv.sendAckSignal(shardNum, newVersionNum, previousOwnerGroup, previousOwnerGid)
-		
-		return
-	}
-	
-}
-
-func (kv *ShardKV) servingToServing(shardNum int, newVersionNum int) {
-	kv.mu.Lock()
-	shardToUpdate := copyShard(kv.db[shardNum])
-	shardToUpdate.Config_Num = newVersionNum
-	log.Printf("On Server %d of gid %d, shard %d starts migrating from Serving in version %d to Serving in version %d", kv.me, kv.gid, shardNum, newVersionNum - 1, newVersionNum)
-	
-
-	kv.mu.Unlock()
-
-	kv.syncShardMessageUntilCommit(shardToUpdate)
-	
-
-	//<- intermediate_Channel
-
-	log.Printf("On Server %d of gid %d, shard %d finished migrating from Serving in version %d to Serving in version %d", kv.me, kv.gid, shardNum, newVersionNum - 1, newVersionNum)
-	
-}
-
-func (kv *ShardKV) servingToGarbage(shardNum int, newVersionNum int) {
-	kv.mu.Lock()
-	shardToUpdate := copyShard(kv.db[shardNum])
-	shardToUpdate.Config_Num = newVersionNum
-	shardToUpdate.State = Sending
-
-	log.Printf("On Server %d of gid %d, shard %d start migrating from Serving in version %d to Garbage in version %d", kv.me, kv.gid, shardNum, newVersionNum - 1, newVersionNum)
-
-	kv.mu.Unlock()
-
-	kv.syncShardMessageUntilCommit(shardToUpdate)
-
-	//<- intermediate_Channel
-	// now that the cluster has reached agreement on sending, now just wait for 
-	// agreement on garbaging
-	// which is determined by reception of ack rpc from the current owner of the shard
-
-	//<- intermediate_Channel
-	shardToUpdate.State = Garbage
-	for {
-		kv.mu.Lock()
-		if updateSucceed(copyShard(kv.db[shardToUpdate.Shard_Num]), copyShard(shardToUpdate)) {
-			kv.mu.Unlock()
-			break
-		} else {
-			kv.mu.Unlock()
-			time.Sleep(time.Duration(kvserver_loop_wait_time_millisecond) * time.Millisecond)
-			
-		}
-	}
-	log.Printf("On Server %d of gid %d, shard %d finished migrating from Serving in version %d to Garbage in version %d", kv.me, kv.gid, shardNum, newVersionNum - 1, newVersionNum)
-
-	return
-}
-
-func (kv *ShardKV) migrateShard(shardNum int, config_Update_Channels chan int) {
-
-	for newVersionNum := range config_Update_Channels{
-		if newVersionNum == 1 {
-			shardToUpdate := Shard{}
-			shardToUpdate.Shard_Num = shardNum
-			shardToUpdate.Config_Num = newVersionNum
-			shardToUpdate.Data = make(map[string]string)
-
-			kv.mu.Lock()
-			if kv.configs[newVersionNum].Shards[shardNum] == kv.gid {		
-				shardToUpdate.State = Serving
-				log.Printf("On Server %d of gid %d, Shard %d will migrate to Serving in version %d", kv.me, kv.gid, shardNum, newVersionNum)
-			} else {
-				shardToUpdate.State = Garbage
-				log.Printf("On Server %d of gid %d, Shard %d will migrate to Garbage in version %d", kv.me, kv.gid, shardNum, newVersionNum)
-			}
-
-			kv.mu.Unlock()
-
-			kv.syncShardMessageUntilCommit(shardToUpdate)
-
-			//<- intermediate_Channel
-			log.Printf("On Server %d of gid %d, Shard %d finished migrate to version %d upon exiting the loop", kv.me, kv.gid, shardNum, newVersionNum)
-
-		} else {
-			kv.mu.Lock()
-			if kv.configs[newVersionNum - 1].Shards[shardNum] != kv.gid && kv.configs[newVersionNum].Shards[shardNum] != kv.gid {
-				kv.mu.Unlock()
-				kv.garbageToGarbage(shardNum, newVersionNum)
-			} else if (kv.configs[newVersionNum - 1].Shards[shardNum] != kv.gid && kv.configs[newVersionNum].Shards[shardNum] == kv.gid) {
-				kv.mu.Unlock()
-				kv.garbageToServing(shardNum, newVersionNum)
-			} else if (kv.configs[newVersionNum - 1].Shards[shardNum] == kv.gid && kv.configs[newVersionNum].Shards[shardNum] == kv.gid) {
-				kv.mu.Unlock()
-				kv.servingToServing(shardNum, newVersionNum)
-			} else {
-				kv.mu.Unlock()
-				kv.servingToGarbage(shardNum, newVersionNum)
-			}
-		}
-	}
 }
 
 func (kv *ShardKV) updateConfig(newConfig shardmaster.Config) {
@@ -916,14 +834,266 @@ func (kv *ShardKV) updateConfig(newConfig shardmaster.Config) {
 
 	kv.configs = append(kv.configs, newConfig)
 	log.Printf("Server %d of gid %d Finished agreement on config %d", kv.me, kv.gid, newVersionNum)
-	kv.mu.Unlock()
-	
 
 	for i := 0; i < shardmaster.NShards; i++ {
-		kv.config_Update_Channels[i] <- newVersionNum
-	}
+		kv.shardLocks[i].Lock()
+		if newVersionNum == 1 {
+			if kv.configs[newVersionNum].Shards[i] == kv.gid {
+				newShard := Shard{}
+				newShard.Shard_Num = i
+				newShard.Config_Num = newVersionNum
+				newShard.State = Serving
 
-	kv.mu.Lock()
+				kv.shardUpdateBuffer[i] = append(kv.shardUpdateBuffer[i], copyShard(newShard))
+
+				kv.shardToSync[i] = copyShard(newShard)
+
+				
+				/*opToRaft := Op{}
+				opToRaft.Operation = "Update_Shard"
+				opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
+		
+				_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+
+				if isLeader {
+					kv.shardLastAgreeCommand[i] = copyShard(kv.shardToSync[i])
+					kv.shardLastAgreeIndex[i] = index
+	
+					log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+				} else {
+					sentinelShard := Shard{}
+					sentinelShard.Config_Num = -1
+	
+					kv.shardLastAgreeCommand[i] = kv.shardLastAgreeCommand[i]
+					kv.shardLastAgreeIndex[i] = kv.shardLastAgreeIndex[i]
+	
+					//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+	
+				}*/
+
+			} else {
+				newShard := Shard{}
+				newShard.Shard_Num = i
+				newShard.Config_Num = newVersionNum
+				newShard.State = Garbage
+
+				kv.shardUpdateBuffer[i] = append(kv.shardUpdateBuffer[i], copyShard(newShard))
+
+				kv.shardToSync[i] = copyShard(newShard)
+
+				/*opToRaft := Op{}
+				opToRaft.Operation = "Update_Shard"
+				opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
+
+		
+				_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+
+				if isLeader {
+					kv.shardLastAgreeCommand[i] = copyShard(kv.shardToSync[i])
+					kv.shardLastAgreeIndex[i] = index
+	
+					log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+				} else {
+					sentinelShard := Shard{}
+					sentinelShard.Config_Num = -1
+	
+					kv.shardLastAgreeCommand[i] = kv.shardLastAgreeCommand[i]
+					kv.shardLastAgreeIndex[i] = kv.shardLastAgreeIndex[i]
+	
+					//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+	
+				}*/
+			}
+		} else {
+
+			if kv.configs[newVersionNum - 1].Shards[i] != kv.gid && kv.configs[newVersionNum].Shards[i] != kv.gid {
+				
+				newShard := Shard{}
+				newShard.Shard_Num = i
+				newShard.Config_Num = newVersionNum
+				newShard.State = Garbage
+
+				if len(kv.shardUpdateBuffer[i]) == 0{
+					kv.shardToSync[i] = copyShard(newShard)
+					// we don't judge soly on haveing config_num = -1
+					// on shardToSync[i] because it is possible that the server is waiting for
+					// sync on serving after fetching data from previous owner
+					// or waiting for data garbaging command following receiving ackSignal from new owner
+					/*opToRaft := Op{}
+					opToRaft.Operation = "Update_Shard"
+					opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
+	
+			
+					_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+
+					if isLeader {
+						kv.shardLastAgreeCommand[i] = copyShard(kv.shardToSync[i])
+						kv.shardLastAgreeIndex[i] = index
+		
+						log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+					} else {
+						sentinelShard := Shard{}
+						sentinelShard.Config_Num = -1
+		
+						kv.shardLastAgreeCommand[i] = kv.shardLastAgreeCommand[i]
+						kv.shardLastAgreeIndex[i] = kv.shardLastAgreeIndex[i]
+		
+						//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+		
+					}*/
+				}
+				
+				kv.shardUpdateBuffer[i] = append(kv.shardUpdateBuffer[i], copyShard(newShard))
+
+				
+
+			} else if (kv.configs[newVersionNum - 1].Shards[i] != kv.gid && kv.configs[newVersionNum].Shards[i] == kv.gid) {
+				//kv.mu.Unlock()
+				//kv.garbageToServing(shardNum, newVersionNum)
+				newShard1 := Shard{}
+				newShard1.Shard_Num = i
+				newShard1.Config_Num = newVersionNum
+				newShard1.State = Pulling
+
+				if len(kv.shardUpdateBuffer[i]) == 0{
+					kv.shardToSync[i] = copyShard(newShard1)
+					// we don't judge soly on haveing config_num = -1
+					// on shardToSync[i] because it is possible that the server is waiting for
+					// sync on serving after fetching data from previous owner
+					// or waiting for data garbaging command following receiving ackSignal from new owner
+					
+					/*opToRaft := Op{}
+					opToRaft.Operation = "Update_Shard"
+					opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
+	
+			
+					_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+
+					if isLeader {
+						kv.shardLastAgreeCommand[i] = copyShard(kv.shardToSync[i])
+						kv.shardLastAgreeIndex[i] = index
+		
+						log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+					} else {
+						sentinelShard := Shard{}
+						sentinelShard.Config_Num = -1
+		
+						kv.shardLastAgreeCommand[i] = kv.shardLastAgreeCommand[i]
+						kv.shardLastAgreeIndex[i] = kv.shardLastAgreeIndex[i]
+		
+						//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+		
+					}*/
+				}
+				
+
+				kv.shardUpdateBuffer[i] = append(kv.shardUpdateBuffer[i], copyShard(newShard1))
+
+
+				newShard2 := Shard{}
+				newShard2.Shard_Num = i
+				newShard2.Config_Num = newVersionNum
+				newShard2.State = Serving
+
+				kv.shardUpdateBuffer[i] = append(kv.shardUpdateBuffer[i], copyShard(newShard2))
+
+
+			} else if (kv.configs[newVersionNum - 1].Shards[i] == kv.gid && kv.configs[newVersionNum].Shards[i] == kv.gid) {
+				//kv.mu.Unlock()
+				//kv.servingToServing(shardNum, newVersionNum)
+
+				newShard := Shard{}
+				newShard.Shard_Num = i
+				newShard.Config_Num = newVersionNum
+				newShard.State = Serving
+				if len(kv.shardUpdateBuffer[i]) == 0{
+					kv.shardToSync[i] = copyShard(newShard)
+					// we don't judge soly on haveing config_num = -1
+					// on shardToSync[i] because it is possible that the server is waiting for
+					// sync on serving after fetching data from previous owner
+					// or waiting for data garbaging command following receiving ackSignal from new owner
+					
+					/*opToRaft := Op{}
+					opToRaft.Operation = "Update_Shard"
+					opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
+	
+			
+					_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+
+					if isLeader {
+						kv.shardLastAgreeCommand[i] = copyShard(kv.shardToSync[i])
+						kv.shardLastAgreeIndex[i] = index
+		
+						log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+					} else {
+						sentinelShard := Shard{}
+						sentinelShard.Config_Num = -1
+		
+						kv.shardLastAgreeCommand[i] = kv.shardLastAgreeCommand[i]
+						kv.shardLastAgreeIndex[i] = kv.shardLastAgreeIndex[i]
+		
+						//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+		
+					}*/
+				}
+				kv.shardUpdateBuffer[i] = append(kv.shardUpdateBuffer[i], copyShard(newShard))
+
+				
+
+			} else {
+				//kv.mu.Unlock()
+				//kv.servingToGarbage(shardNum, newVersionNum)
+				newShard1 := Shard{}
+				newShard1.Shard_Num = i
+				newShard1.Config_Num = newVersionNum
+				newShard1.State = Sending
+
+				if len(kv.shardUpdateBuffer[i]) == 0{
+					kv.shardToSync[i] = copyShard(newShard1)
+					// we don't judge soly on haveing config_num = -1
+					// on shardToSync[i] because it is possible that the server is waiting for
+					// sync on serving after fetching data from previous owner
+					// or waiting for data garbaging command following receiving ackSignal from new owner
+					/*opToRaft := Op{}
+					opToRaft.Operation = "Update_Shard"
+					opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
+	
+			
+					_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+
+					if isLeader {
+						kv.shardLastAgreeCommand[i] = copyShard(kv.shardToSync[i])
+						kv.shardLastAgreeIndex[i] = index
+		
+						log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+					} else {
+						sentinelShard := Shard{}
+						sentinelShard.Config_Num = -1
+		
+						kv.shardLastAgreeCommand[i] = kv.shardLastAgreeCommand[i] 
+						kv.shardLastAgreeIndex[i] = kv.shardLastAgreeIndex[i]
+		
+						//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+		
+					}*/
+				}
+				
+
+				kv.shardUpdateBuffer[i] = append(kv.shardUpdateBuffer[i], copyShard(newShard1))
+
+				
+
+				newShard2 := Shard{}
+				newShard2.Shard_Num = i
+				newShard2.Config_Num = newVersionNum
+				newShard2.State = Garbage
+
+				kv.shardUpdateBuffer[i] = append(kv.shardUpdateBuffer[i], copyShard(newShard2))
+			}
+
+		}
+		kv.shardLocks[i].Unlock()
+	}
 
 	return
 }
@@ -949,66 +1119,253 @@ func stateIntToString(state int) string{
 
 
 func (kv *ShardKV) updateShard(updatedShard Shard) {
-
+	
 	shardNum := updatedShard.Shard_Num
 
 	configNum := updatedShard.Config_Num
 
+	kv.shardLocks[shardNum].Lock()
+	defer kv.shardLocks[shardNum].Unlock()
+
 	previousShard := kv.db[shardNum]
 
-
-	log.Printf("On server %d of gid %d, shard %d, from state %s at config %d to state %s at config %d", kv.me, kv.gid, shardNum, stateIntToString(previousShard.State), previousShard.Config_Num, stateIntToString(updatedShard.State), updatedShard.Config_Num)
-
-	if updatedShard.State == Garbage {
-		if (previousShard.State == Garbage && previousShard.Config_Num == updatedShard.Config_Num - 1) || 
-		(previousShard.State == Sending && previousShard.Config_Num == updatedShard.Config_Num) {
-			kv.db[shardNum] = updatedShard
-			log.Printf("On server %d of gid %d, successfully update shard %d to state %s at config num %d", kv.me, kv.gid, shardNum, "Garbage", configNum)
-			//kv.mu.Unlock()
-			//kv.intermediate_Channels[shardNum] <- configNum
-			//kv.mu.Lock()
-		}
-	} else if updatedShard.State == Pulling {
-		if (previousShard.State == Garbage && previousShard.Config_Num == updatedShard.Config_Num - 1) {
-			kv.db[shardNum] = updatedShard
-			log.Printf("On server %d of gid %d, successfully update shard %d to state %s at config num %d", kv.me, kv.gid, shardNum, "Pulling", configNum)
-			//kv.mu.Unlock()
-			//kv.intermediate_Channels[shardNum] <- configNum
-			//kv.mu.Lock()
-		}
-	} else if updatedShard.State == Serving {
-		if (previousShard.State == Serving && previousShard.Config_Num == updatedShard.Config_Num - 1) ||
-		(previousShard.State == Pulling && previousShard.Config_Num == updatedShard.Config_Num) || 
-		(previousShard.State == Garbage && previousShard.Config_Num == 0){
-			kv.db[shardNum] = updatedShard
-			log.Printf("On server %d of gid %d, successfully update shard %d to state %s at config num %d", kv.me, kv.gid, shardNum, "Serving", configNum)
-			//kv.mu.Unlock()
-			//kv.intermediate_Channels[shardNum] <- configNum
-			//kv.mu.Lock()
-		}
-	} else {
-		if (previousShard.State == Serving && previousShard.Config_Num == updatedShard.Config_Num - 1) {
-			kv.db[shardNum] = updatedShard
-			log.Printf("On server %d of gid %d, successfully update shard %d to state %s at config num %d", kv.me, kv.gid, shardNum, "Sending", configNum)
-			//kv.mu.Unlock()
-			//kv.intermediate_Channels[shardNum] <- configNum
-			//kv.mu.Lock()
-		}
+	if len(kv.shardUpdateBuffer[shardNum]) == 0 {
+		// meaning we have finished all state update in the buffer
+		return
 	}
+
+	log.Printf("kvserver %d of gid %d, shard %d, try to update from state %s at config %d to state %s at config %d", kv.me, kv.gid, shardNum, stateIntToString(previousShard.State), previousShard.Config_Num, stateIntToString(updatedShard.State), updatedShard.Config_Num)
+
+	if (kv.shardUpdateBuffer[shardNum][0].Config_Num == updatedShard.Config_Num) &&
+	(kv.shardUpdateBuffer[shardNum][0].State == updatedShard.State) {
+
+		if updatedShard.State == Garbage {
+			kv.db[shardNum] = updatedShard
+			kv.db[shardNum].Data = make(map[string]string)
+
+			kv.shardUpdateBuffer[shardNum] = kv.shardUpdateBuffer[shardNum][1:]
+			if len(kv.shardUpdateBuffer[shardNum]) == 0 {
+				sentinelShard := Shard{}
+				sentinelShard.Config_Num = -1
+				kv.shardToSync[shardNum] = sentinelShard
+			} else {
+				kv.shardToSync[shardNum] = copyShard(kv.shardUpdateBuffer[shardNum][0])
+
+				/*opToRaft := Op{}
+				opToRaft.Operation = "Update_Shard"
+				opToRaft.Shard_To_Update = copyShard(kv.shardToSync[shardNum])
+
+		
+				_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+
+				if isLeader {
+					kv.shardLastAgreeCommand[shardNum] = copyShard(kv.shardToSync[shardNum])
+					kv.shardLastAgreeIndex[shardNum] = index
+	
+					log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardToSync[shardNum].State), kv.shardToSync[shardNum].Config_Num, index)
+				} else {
+					sentinelShard := Shard{}
+					sentinelShard.Config_Num = -1
+	
+					kv.shardLastAgreeCommand[shardNum] = kv.shardLastAgreeCommand[shardNum]
+					kv.shardLastAgreeIndex[shardNum] = kv.shardLastAgreeIndex[shardNum]
+	
+					//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardToSync[shardNum].State), kv.shardToSync[shardNum].Config_Num, index)
+	
+				}*/
+
+			}
+
+		}
+
+		if updatedShard.State == Pulling {
+			kv.db[shardNum] = updatedShard
+			kv.db[shardNum].Data = make(map[string]string)
+
+			kv.shardUpdateBuffer[shardNum] = kv.shardUpdateBuffer[shardNum][1:]
+
+			sentinelShard := Shard{}
+			sentinelShard.Config_Num = -1
+			kv.shardToSync[shardNum] = sentinelShard
+
+			shardRequested := updatedShard.Shard_Num
+			newVersionNum := updatedShard.Config_Num
+			previousOwnerGid := kv.configs[newVersionNum - 1].Shards[shardRequested]
+			previousOwnerGroup := kv.configs[newVersionNum - 1].Groups[previousOwnerGid]
+
+			//kv.mu.Unlock()
+
+			go kv.obtainData(shardRequested, newVersionNum, previousOwnerGroup, previousOwnerGid)
+
+			//kv.mu.Lock()
+
+		}
+
+		if updatedShard.State == Serving {
+			if updatedShard.Config_Num == 1 {
+				kv.db[shardNum] = updatedShard
+				kv.db[shardNum].Data = make(map[string]string)
+
+				kv.shardUpdateBuffer[shardNum] = kv.shardUpdateBuffer[shardNum][1:]
+				if len(kv.shardUpdateBuffer[shardNum]) == 0 {
+					sentinelShard := Shard{}
+					sentinelShard.Config_Num = -1
+					kv.shardToSync[shardNum] = sentinelShard
+				} else {
+					kv.shardToSync[shardNum] = copyShard(kv.shardUpdateBuffer[shardNum][0])
+
+					/*opToRaft := Op{}
+					opToRaft.Operation = "Update_Shard"
+					opToRaft.Shard_To_Update = copyShard(kv.shardToSync[shardNum])
+	
+			
+					_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+					if isLeader {
+						kv.shardLastAgreeCommand[shardNum] = copyShard(kv.shardToSync[shardNum])
+						kv.shardLastAgreeIndex[shardNum] = index
+		
+						log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardToSync[shardNum].State), kv.shardToSync[shardNum].Config_Num, index)
+					} else {
+						sentinelShard := Shard{}
+						sentinelShard.Config_Num = -1
+		
+						kv.shardLastAgreeCommand[shardNum] = kv.shardLastAgreeCommand[shardNum]
+						kv.shardLastAgreeIndex[shardNum] = kv.shardLastAgreeIndex[shardNum]
+		
+						//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardToSync[shardNum].State), kv.shardToSync[shardNum].Config_Num, index)
+		
+					}*/
+				}
+			} else {
+				if (kv.configs[configNum - 1].Shards[shardNum] == kv.gid) {
+					// if the shard is owned by this server in previous version
+					dataToUse := make(map[string]string) 
+
+					for key, value := range previousShard.Data {
+						dataToUse[key] = value
+					} 
+					
+					kv.db[shardNum] = updatedShard
+					kv.db[shardNum].Data = dataToUse
+
+					kv.shardUpdateBuffer[shardNum] = kv.shardUpdateBuffer[shardNum][1:]
+					if len(kv.shardUpdateBuffer[shardNum]) == 0 {
+						sentinelShard := Shard{}
+						sentinelShard.Config_Num = -1
+						kv.shardToSync[shardNum] = sentinelShard
+					} else {
+						kv.shardToSync[shardNum] = copyShard(kv.shardUpdateBuffer[shardNum][0])
+
+						/*opToRaft := Op{}
+						opToRaft.Operation = "Update_Shard"
+						opToRaft.Shard_To_Update = copyShard(kv.shardToSync[shardNum])
+		
+				
+						_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+						if isLeader {
+							kv.shardLastAgreeCommand[shardNum] = copyShard(kv.shardToSync[shardNum])
+							kv.shardLastAgreeIndex[shardNum] = index
+			
+							log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardToSync[shardNum].State), kv.shardToSync[shardNum].Config_Num, index)
+						} else {
+							sentinelShard := Shard{}
+							sentinelShard.Config_Num = -1
+			
+							kv.shardLastAgreeCommand[shardNum] = kv.shardLastAgreeCommand[shardNum]
+							kv.shardLastAgreeIndex[shardNum] = kv.shardLastAgreeIndex[shardNum]
+			
+							//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardToSync[shardNum].State), kv.shardToSync[shardNum].Config_Num, index)
+			
+						}*/
+					}
+				} else {
+					// that we get data from some body else and we are new transitioning from pulling to serving
+					kv.db[shardNum] = updatedShard
+
+					kv.shardUpdateBuffer[shardNum] = kv.shardUpdateBuffer[shardNum][1:]
+					if len(kv.shardUpdateBuffer[shardNum]) == 0 {
+						sentinelShard := Shard{}
+						sentinelShard.Config_Num = -1
+						kv.shardToSync[shardNum] = sentinelShard
+					} else {
+						kv.shardToSync[shardNum] = copyShard(kv.shardUpdateBuffer[shardNum][0])
+
+						/*opToRaft := Op{}
+						opToRaft.Operation = "Update_Shard"
+						opToRaft.Shard_To_Update = copyShard(kv.shardToSync[shardNum])
+		
+				
+						_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+						if isLeader {
+							kv.shardLastAgreeCommand[shardNum] = copyShard(kv.shardToSync[shardNum])
+							kv.shardLastAgreeIndex[shardNum] = index
+			
+							log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardToSync[shardNum].State), kv.shardToSync[shardNum].Config_Num, index)
+						} else {
+							sentinelShard := Shard{}
+							sentinelShard.Config_Num = -1
+			
+							kv.shardLastAgreeCommand[shardNum] = kv.shardLastAgreeCommand[shardNum]
+							kv.shardLastAgreeIndex[shardNum] = kv.shardLastAgreeIndex[shardNum]
+			
+							//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardToSync[shardNum].State), kv.shardToSync[shardNum].Config_Num, index)
+			
+						}*/
+					}
+
+
+					shardAcked := updatedShard.Shard_Num
+					num_Target := updatedShard.Config_Num
+					previousOwnerGid := kv.configs[num_Target - 1].Shards[shardAcked]
+					previousOwnerGroup := kv.configs[num_Target - 1].Groups[previousOwnerGid]
+
+					//kv.mu.Unlock()
+					go kv.sendAckSignal(shardAcked, num_Target, previousOwnerGroup, previousOwnerGid)
+					//kv.mu.Lock()
+				}
+			}			
+			
+		}
+
+		if updatedShard.State == Sending {
+			dataToUse := make(map[string]string) 
+
+			for key, value := range previousShard.Data {
+				dataToUse[key] = value
+			} 
+			
+			kv.db[shardNum] = updatedShard
+			kv.db[shardNum].Data = dataToUse
+
+			kv.shardUpdateBuffer[shardNum] = kv.shardUpdateBuffer[shardNum][1:]
+
+			sentinelShard := Shard{}
+			sentinelShard.Config_Num = -1
+			kv.shardToSync[shardNum] = sentinelShard
+
+		}
+	
+		log.Printf("kvserver %d of gid %d, shard %d, successfully update from state %s at config %d to state %s at config %d", kv.me, kv.gid, shardNum, stateIntToString(previousShard.State), previousShard.Config_Num, stateIntToString(updatedShard.State), updatedShard.Config_Num)
+		if kv.shardToSync[shardNum].Config_Num != -1 {
+			log.Printf("kvserver %d of gid %d, shard %d, next shardToSync has state %s at version number %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardToSync[shardNum].State), kv.shardToSync[shardNum].Config_Num)
+		}
+		
+	}
+
 }
 
 func(kv *ShardKV) applyOperation(operation Op) {
 	op := operation.Operation
 
 	if op == "Update_Config" {
-		//log.Printf("On server %d of gid %d, try to update config to %d", kv.me, kv.gid, operation.New_Config.Num)
+		//log.Printf("kvserver %d of gid %d, try to update config to %d", kv.me, kv.gid, operation.New_Config.Num)
 		newConfig := copyConfig(operation.New_Config)
 		kv.updateConfig(newConfig)
 		return
 	} 
 	
 	if op == "Update_Shard" {
-		//log.Printf("On server %d of gid %d, try to update shard %d to state %d at config num %d", kv.me, kv.gid, operation.Shard_To_Update.Shard_Num, operation.Shard_To_Update.State, operation.Shard_To_Update.Config_Num)
+		//log.Printf("kvserver %d of gid %d, try to update shard %d to state %d at config num %d", kv.me, kv.gid, operation.Shard_To_Update.Shard_Num, operation.Shard_To_Update.State, operation.Shard_To_Update.Config_Num)
 		updatedShard := copyShard(operation.Shard_To_Update)
 		kv.updateShard(updatedShard)
 		return 
@@ -1022,6 +1379,9 @@ func(kv *ShardKV) applyOperation(operation Op) {
 
 	shard := operation.Shard_Num
 	client_Config_Num := operation.Client_Config_Num
+
+	kv.shardLocks[shard].Lock()
+	defer kv.shardLocks[shard].Unlock()
 
 	client_Info_This, ok := kv.clients_Info[Client_Serial_Number]
 	if !ok {
@@ -1057,28 +1417,7 @@ func(kv *ShardKV) applyOperation(operation Op) {
 		return
 	}
 
-
-
 	replyToStore := StoredReply{}
-
-	/*if kv.db[shard].Config_Num != client_Config_Num {
-		replyToStore.Err = ErrWrongGroup // since there is an issue with shard ownership consistency
-		// we want to ensure the client gets reply from server whose config is in sync with the client server
-	} else if kv.configs[client_Config_Num].Shards[shard] != kv.gid {
-		// that at current config, the gid server is not the rightful owner
-		replyToStore.Err = ErrWrongGroup
-		// which should not be possible when client config number and server config number are same
-		// but no harm is introduced so why not ...
-	} else if kv.db[shard].State == Pulling {
-		// that at current config, the gid server is the rightful owner but the 
-		// server is still waiting for consensus on transitioning to serving state
-		replyToStore.Err = ErrWrongGroup
-		// initially I had ErrPulling, but it is possible that 
-		// when the system retries based on expection that shard will be ready to serve,
-		// the shard might have already been migrated to higher version
-		// so simply reply ErrWrongGroup to force client retry request with most up-to-date config
-		
-	}*/
 	
 	if kv.db[shard].Config_Num == client_Config_Num && kv.db[shard].State == Serving {
 		// ok, make it simple, serve only when system owns the shard and the config number is the same
@@ -1115,6 +1454,7 @@ func(kv *ShardKV) applyOperation(operation Op) {
 		}
 
 	} else {
+		replyToStore.Server_Config_Num = kv.db[shard].Config_Num
 		replyToStore.Err = ErrWrongGroup
 	}
 
@@ -1130,13 +1470,18 @@ func (kv *ShardKV) handleRequest(applyMessage raft.ApplyMsg) {
 		commandIndex := applyMessage.CommandIndex
 		commandTerm := applyMessage.CommandTerm
 		operation := applyMessage.Command.(Op)
+		//log.Printf("Kvserver %d of gid %d received operation with commandIndex %d from handleRequest with LastIncludeIndex %d, LastIncludeTerm %d", kv.me, kv.gid, commandIndex, kv.lastIncludedIndex, kv.lastIncludedTerm)
+		if (commandIndex <= kv.lastIncludedIndex) {
+			//log.Printf("Kvserver %d of gid %d did not applies operation with commandIndex %d from handleRequest with LastIncludeIndex %d, LastIncludeTerm %d", kv.me, kv.gid, commandIndex, kv.lastIncludedIndex, kv.lastIncludedTerm)
+			return
+		}
 		if (commandIndex == kv.lastIncludedIndex + 1) {
-			log.Printf("Kvserver %d of gid %d applies operation with commandIndex %d from handleRequest with LastIncludeIndex %d, LastIncludeTerm %d", kv.me, kv.gid, commandIndex, kv.lastIncludedIndex, kv.lastIncludedTerm)
+			//log.Printf("Kvserver %d of gid %d applies operation with commandIndex %d from handleRequest with LastIncludeIndex %d, LastIncludeTerm %d", kv.me, kv.gid, commandIndex, kv.lastIncludedIndex, kv.lastIncludedTerm)
 			kv.lastIncludedIndex = commandIndex
 			kv.lastIncludedTerm = commandTerm
 			kv.applyOperation(operation)
 		} else {
-			log.Printf("Kvserver %d of gid %d put operation with LastIncludeIndex %d, LastIncludeTerm %d into buffer", kv.me, kv.gid, kv.lastIncludedIndex, kv.lastIncludedTerm)
+			//log.Printf("Kvserver %d of gid %d put operation with commandIndex %d, commandTerm %d into buffer, current lastIncludeIndex on server is %d", kv.me, kv.gid, commandIndex, commandTerm, kv.lastIncludedIndex)
 			kv.operationBuffer = append(kv.operationBuffer, operation)
 			kv.indexBuffer = append(kv.indexBuffer, commandIndex)
 			kv.termBuffer = append(kv.termBuffer, commandTerm)
@@ -1146,42 +1491,79 @@ func (kv *ShardKV) handleRequest(applyMessage raft.ApplyMsg) {
 		LastIncludedIndex := applyMessage.LastIncludedIndex
 		LastIncludedTerm := applyMessage.LastIncludedTerm
 		if (LastIncludedIndex > kv.lastIncludedIndex) {
+			log.Printf("Kvserver %d of gid %d install snapshot with LastIncludedIndex %d and LastIncludedTerm %d, current lastIncludeIndex is %d", kv.me, kv.gid, LastIncludedIndex, LastIncludedTerm, kv.lastIncludedIndex)
 			r := bytes.NewBuffer(applyMessage.SnapShotByte)
 			d := labgob.NewDecoder(r)
 
 			var clients_Info map[int64]*Client //map from client serial number to its state pertaining cached responses
 			var db []Shard
+			var configs []shardmaster.Config
+
+			var shardUpdateBuffer [][]Shard
+
+			var shardToSync []Shard
+
+			var shardLastAgreeCommand []Shard
+			var shardLastAgreeIndex []int
 
 			if d.Decode(&clients_Info) != nil ||
-			   d.Decode(&db) != nil {
-				//log.Printf("Kvserver %d could not read snapshot from raft. There is error in reading.", kv.me)
+				d.Decode(&db) != nil ||
+				d.Decode(&configs) != nil ||
+				d.Decode(&shardUpdateBuffer) != nil ||
+				d.Decode(&shardToSync) != nil ||
+				d.Decode(&shardLastAgreeCommand) != nil ||
+				d.Decode(&shardLastAgreeIndex) != nil{
+				log.Printf("Kvserver %d of gid %d cannot install snapshot due to read err with LastIncludedIndex %d and LastIncludedTerm %d, current lastIncludeIndex is %d", kv.me, kv.gid, LastIncludedIndex, LastIncludedTerm, kv.lastIncludedIndex)
+			
 				return
+
+				
 			} else {
-				//log.Printf("Kvserver %d, having LastIncludeIndex %d and lastIncludeTerm %d, reads snapshot from raft with LastIncludeIndex %d, LastIncludeTerm %d.", kv.me, kv.lastIncludedIndex, kv.lastIncludedIndex, LastIncludedIndex, LastIncludedTerm)
+				for i := 0; i < shardmaster.NShards; i++ {
+					kv.shardLocks[i].Lock()
+				}
 				kv.lastIncludedIndex = LastIncludedIndex
 				kv.lastIncludedTerm = LastIncludedTerm
+
 				kv.clients_Info = clients_Info
 				kv.db = db
-				
+				kv.configs = configs
+				kv.shardUpdateBuffer = shardUpdateBuffer
+				kv.shardToSync = shardToSync
+				kv.shardLastAgreeCommand = shardLastAgreeCommand
+				kv.shardLastAgreeIndex = shardLastAgreeIndex
+				log.Printf("Kvserver %d of gid %d successfully installed snapshot with LastIncludedIndex %d and LastIncludedTerm %d, current lastIncludeIndex is %d", kv.me, kv.gid, LastIncludedIndex, LastIncludedTerm, kv.lastIncludedIndex)
+				for i := 0; i < shardmaster.NShards; i++ {
+					kv.shardLocks[i].Unlock()
+				}
 				kv.emptyOperationBuffer()
 			}
+
+			
 		}
 	}
 }
 
 func (kv *ShardKV) FetchShard(args *FetchShardArgs, reply *FetchShardReply) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	_, isLeader := kv.rf.GetState()
+	//kv.mu.Lock()
+	//defer kv.mu.Unlock()
+	_, isLeader, currentLeaderId, _ := kv.rf.GetStateWTF()
 	if !isLeader {
 		//reply.CurrentLeaderId = currentLeaderId
 		reply.Err = ErrWrongLeader
+		reply.CurrentLeaderId = currentLeaderId
 		return
 	}
+	kv.shardLocks[args.ShardRequested].Lock()
+	defer kv.shardLocks[args.ShardRequested].Unlock()
+
 	if args.Num_Target > kv.db[args.ShardRequested].Config_Num {
 		// the version number of requester is higher than that of current server
 		// meaning the server is not up-to-date and the recipient needs to wait 
 		reply.Err = ErrMigrationInconsistent
+
+		reply.Config_Num = kv.db[args.ShardRequested].Config_Num
+		reply.State = kv.db[args.ShardRequested].State
 		return
 	}
 
@@ -1192,6 +1574,9 @@ func (kv *ShardKV) FetchShard(args *FetchShardArgs, reply *FetchShardReply) {
 		// the replicating receiving err garvage just need to wait for sync agreement that upgrade
 		// shard to serving state
 		reply.Err = ErrGarbage
+
+		reply.Config_Num = kv.db[args.ShardRequested].Config_Num
+		reply.State = kv.db[args.ShardRequested].State
 		return
 	} 
 
@@ -1203,49 +1588,32 @@ func (kv *ShardKV) FetchShard(args *FetchShardArgs, reply *FetchShardReply) {
 	return
 }
 
-/*func (kv *ShardKV) syncGarbageShard(shard Shard) {
-
-	counter := 0
-	for {
-		kv.mu.Lock()
-		if (kv.db[shard.Shard_Num].Config_Num > shard.Config_Num) ||
-		(kv.db[shard.Shard_Num].Config_Num == shard.Config_Num && kv.db[shard.Shard_Num].State == Garbage) {
-			kv.mu.Unlock()
-			return
-		} else {
-			if counter == 20 {
-				shardToSync := copyShard(shard)
-				shardSyncOp := Op{}
-				shardSyncOp.Operation = "Update_Shard"
-				shardSyncOp.Shard_To_Update = shardToSync
-				kv.rf.StartQuick(shardSyncOp)
-				kv.mu.Unlock()
-
-				counter = 0
-			} 
-			counter++
-			time.Sleep(time.Duration(1) * time.Millisecond)
-		}
-		
-	}
-}*/
-
 func (kv *ShardKV) AckShard(args *AckShardArgs, reply *AckShardReply) {
 
-	kv.mu.Lock()
-	_, isLeader := kv.rf.GetState()
+	//kv.mu.Lock()
+
+	_, isLeader, currentLeaderId, _:= kv.rf.GetStateWTF()
 	if !isLeader {
 		//reply.CurrentLeaderId = currentLeaderId
 		reply.Err = ErrWrongLeader
-		kv.mu.Unlock()
+		reply.CurrentLeaderId = currentLeaderId
+	
 		return
 	}
+
+	/// fixed race here for access to shard specific sections
+	kv.shardLocks[args.ShardAcked].Lock()
+
+	defer kv.shardLocks[args.ShardAcked].Unlock()
 	if args.Num_Target > kv.db[args.ShardAcked].Config_Num {
 		// meaning the server is not up to date and the recipient needs to wait 
 		// which should not be possible since ack shard is always after fetch shard
 		// and fetch shard will not be executed unless server is up to date
 		reply.Err = ErrMigrationInconsistent
-		kv.mu.Unlock()
+
+		reply.Config_Num = kv.db[args.ShardAcked].Config_Num
+		reply.State = kv.db[args.ShardAcked].State
+
 		return
 	}
 
@@ -1256,7 +1624,10 @@ func (kv *ShardKV) AckShard(args *AckShardArgs, reply *AckShardReply) {
 		// the replicating receiving err garvage just need to wait for sync agreement that upgrade
 		// shard to serving state
 		reply.Err = ErrGarbage
-		kv.mu.Unlock()
+
+		reply.Config_Num = kv.db[args.ShardAcked].Config_Num
+		reply.State = kv.db[args.ShardAcked].State
+
 		return
 	} 
 
@@ -1265,19 +1636,46 @@ func (kv *ShardKV) AckShard(args *AckShardArgs, reply *AckShardReply) {
 		shardToGarbage.State = Garbage
 		shardToGarbage.Data = make(map[string]string)
 		reply.Err = OK
-		kv.mu.Unlock()
 
-		//go kv.syncGarbageShard(shardToGarbage)
 
-		defer kv.syncShardMessageUntilCommit(shardToGarbage)
+		if (kv.shardUpdateBuffer[args.ShardAcked][0].Config_Num == args.Num_Target) &&
+		(kv.shardUpdateBuffer[args.ShardAcked][0].State == Garbage) &&
+		(kv.shardToSync[args.ShardAcked].Config_Num == -1) {
+			kv.shardToSync[args.ShardAcked] = shardToGarbage
+
+			/*opToRaft := Op{}
+			opToRaft.Operation = "Update_Shard"
+			opToRaft.Shard_To_Update = copyShard(kv.shardToSync[args.ShardAcked])
+
+	
+			_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+			if isLeader {
+				kv.shardLastAgreeCommand[args.ShardAcked] = copyShard(kv.shardToSync[args.ShardAcked])
+				kv.shardLastAgreeIndex[args.ShardAcked] = index
+
+				log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, args.ShardAcked, stateIntToString(kv.shardToSync[args.ShardAcked].State), kv.shardToSync[args.ShardAcked].Config_Num, index)
+			} else {
+				sentinelShard := Shard{}
+				sentinelShard.Config_Num = -1
+
+				kv.shardLastAgreeCommand[args.ShardAcked] = kv.shardLastAgreeCommand[args.ShardAcked] 
+				kv.shardLastAgreeIndex[args.ShardAcked] = kv.shardLastAgreeIndex[args.ShardAcked]
+
+				//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, args.ShardAcked, stateIntToString(kv.shardToSync[args.ShardAcked].State), kv.shardToSync[args.ShardAcked].Config_Num, index)
+
+			}*/
+		}
+	
+
 		return
 	}
 	reply.Err = OK
-	kv.mu.Unlock()
+
 	return
 }
 
-func (kv *ShardKV) fetchNewConfig() {
+func (kv *ShardKV) fetchNewConfigWTF() {
+
 
 	for {
 		kv.mu.Lock()
@@ -1290,21 +1688,315 @@ func (kv *ShardKV) fetchNewConfig() {
 				opToRaft.Operation = "Update_Config"
 				opToRaft.New_Config = copyConfig(configToAdd)
 				kv.rf.StartQuick(opToRaft)
-	
-				log.Printf("On server %d of gid %d, Starts agreement on config %d", kv.me, kv.gid, configToAdd.Num)
-	
+
+				//log.Printf("kvserver %d of gid %d, Starts agreement on config %d at index %d", kv.me, kv.gid, configToAdd.Num, index)
+
+
 			}
-	
+
 			opToRaft := Op{}
 			opToRaft.Operation = "Update_Config"
 			opToRaft.New_Config = copyConfig(newConfig)
 			kv.rf.StartQuick(opToRaft)
-			log.Printf("On server %d of gid %d, Starts agreement on config %d", kv.me, kv.gid, newConfig.Num)
+			
+			//log.Printf("kvserver %d of gid %d, Starts agreement on config %d at index %d", kv.me, kv.gid, newConfig.Num, index)
 
 		}
 		kv.mu.Unlock()
-
+		//kv.timeLastConfig = time.Now()
 		time.Sleep(time.Duration(config_query_interval_millisecond) * time.Millisecond)
+	}
+	
+		
+}
+
+
+/*func (kv *ShardKV) fetchNewConfig() {
+
+
+
+	newConfig := kv.mck.Query(-1)
+
+	if (newConfig.Num >= len(kv.configs)) {
+		for i := len(kv.configs); i < newConfig.Num; i++ {
+			configToAdd := kv.mck.Query(i)
+			opToRaft := Op{}
+			opToRaft.Operation = "Update_Config"
+			opToRaft.New_Config = copyConfig(configToAdd)
+			kv.rf.StartQuick(opToRaft)
+
+			//log.Printf("kvserver %d of gid %d, Starts agreement on config %d at index %d", kv.me, kv.gid, configToAdd.Num, index)
+
+
+		}
+
+		opToRaft := Op{}
+		opToRaft.Operation = "Update_Config"
+		opToRaft.New_Config = copyConfig(newConfig)
+		kv.rf.StartQuick(opToRaft)
+		
+		//log.Printf("kvserver %d of gid %d, Starts agreement on config %d at index %d", kv.me, kv.gid, newConfig.Num, index)
+
+	}
+
+	kv.timeLastConfig = time.Now()
+
+	
+	
+		
+}*/
+
+
+/*func (kv *ShardKV) obtainDataPeriodically() {
+	for {
+		
+		for i := 0; i < shardmaster.NShards; i++ {
+			kv.mu.Lock()
+			if kv.db[i].State == Pulling {
+			
+
+				shardRequested := i
+				newVersionNum := kv.db[i].Config_Num
+				previousOwnerGid := kv.configs[newVersionNum - 1].Shards[shardRequested]
+				previousOwnerGroup := kv.configs[newVersionNum - 1].Groups[previousOwnerGid]
+
+				kv.mu.Unlock()
+				go kv.obtainData(shardRequested, newVersionNum, previousOwnerGroup, previousOwnerGid)
+
+			} else {
+				kv.mu.Unlock()
+			}
+		}
+
+		time.Sleep(time.Duration(50) * time.Millisecond)
+	}
+}*/
+
+func (kv *ShardKV) receiveData(dataChan chan Shard) {
+	log.Printf("kvserver %d of gid %d, go routine receiveData() starts", kv.me, kv.gid)
+
+	for receivedData := range dataChan {
+		shardRequested := receivedData.Shard_Num
+		newVersionNum := receivedData.Config_Num
+		log.Printf("kvserver %d of gid %d, go routine receiveData() receives Data for shard %d, version number %d", kv.me, kv.gid, shardRequested, newVersionNum)
+		log.Printf("kvserver %d of gid %d, go routine receiveData() tries to acquire kv.shardLocks[%d]", kv.me, kv.gid, shardRequested)
+		kv.shardLocks[shardRequested].Lock()
+		log.Printf("kvserver %d of gid %d, go routine receiveData() successfully acquires kv.shardLocks[%d]", kv.me, kv.gid, shardRequested)
+
+
+
+		if (len(kv.shardUpdateBuffer[shardRequested]) != 0) {
+			log.Printf("kvserver %d of gid %d, shard %d next expected state is %s at version number %d", kv.me, kv.gid, shardRequested, stateIntToString(kv.shardUpdateBuffer[shardRequested][0].State), newVersionNum)
+			if (kv.shardUpdateBuffer[shardRequested][0].Config_Num == newVersionNum) &&
+			(kv.shardUpdateBuffer[shardRequested][0].State == Serving) &&
+			(kv.shardToSync[shardRequested].Config_Num == -1) {
+				log.Printf("put fetched data into buffer")
+				kv.shardToSync[shardRequested] = copyShard(receivedData)
+
+
+				/*opToRaft := Op{}
+				opToRaft.Operation = "Update_Shard"
+				opToRaft.Shard_To_Update = copyShard(kv.shardToSync[shardRequested])
+	
+		
+				_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+
+				if isLeader {
+					kv.shardLastAgreeCommand[shardRequested] = copyShard(kv.shardToSync[shardRequested])
+					kv.shardLastAgreeIndex[shardRequested] = index
+		
+					log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, shardRequested, stateIntToString(kv.shardToSync[shardRequested].State), kv.shardToSync[shardRequested].Config_Num, index)
+				} else {
+					sentinelShard := Shard{}
+					sentinelShard.Config_Num = -1
+
+					kv.shardLastAgreeCommand[shardRequested] = kv.shardLastAgreeCommand[shardRequested]
+					kv.shardLastAgreeIndex[shardRequested] = kv.shardLastAgreeIndex[shardRequested]
+	
+					//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, shardRequested, stateIntToString(kv.shardToSync[shardRequested].State), kv.shardToSync[shardRequested].Config_Num, index)
+
+				}*/
+				
+			}
+		} else {
+			log.Printf("kvserver %d of gid %d, shard %d, no action is expected to be synced", kv.me, kv.gid, shardRequested)
+		}
+
+		kv.shardLocks[shardRequested].Unlock()
+		log.Printf("kvserver %d of gid %d, go routine receiveData() releases the kv.shardLocks[%d]", kv.me, kv.gid, shardRequested)
+		log.Printf("kvserver %d of gid %d, go routine receiveData() finished processing Data for shard %d, version number %d", kv.me, kv.gid, shardRequested, newVersionNum)
+		//time.Sleep(time.Duration(5) * time.Millisecond)
+
+	}
+
+	log.Printf("kvserver %d of gid %d, go routine receiveData() exits", kv.me, kv.gid)
+}
+
+func shouldStartAgreement(shardCommandToSync Shard, shardLastSync Shard, index int, lastIncludedIndex int) bool{
+	if (shardCommandToSync.Config_Num != shardLastSync.Config_Num) || (shardCommandToSync.State != shardLastSync.State) {
+		return true
+	} else {
+		if lastIncludedIndex - index >= 50{
+			// meaning the current index of the server is bigger than the index we start agreement at 
+			// and the agreement has not been reached
+			return true
+		}
+	}
+	// so shardCommandToSync = shardLastSync but the raft has not commited the shard command yet
+	return false
+}
+
+func (kv *ShardKV) syncShardUpdateMessage() {
+
+	log.Printf("kvserver %d of gid %d, go routine syncShardUpdateMessage() starts", kv.me, kv.gid)
+	for {
+
+		for i := 0; i < shardmaster.NShards; i++ {
+			kv.shardLocks[i].Lock()
+			if kv.shardToSync[i].Config_Num != -1 {
+				if shouldStartAgreement(copyShard(kv.shardToSync[i]), copyShard(kv.shardLastAgreeCommand[i]), kv.shardLastAgreeIndex[i], kv.rf.GetLastApplied()) {
+					opToRaft := Op{}
+					opToRaft.Operation = "Update_Shard"
+					opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
+	
+			
+					_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+					if isLeader {
+						kv.shardLastAgreeCommand[i] = copyShard(kv.shardToSync[i])
+						kv.shardLastAgreeIndex[i] = index
+		
+						log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+					} else {
+						sentinelShard := Shard{}
+						sentinelShard.Config_Num = -1
+
+						kv.shardLastAgreeCommand[i] = kv.shardLastAgreeCommand[i]
+						kv.shardLastAgreeIndex[i] = kv.shardLastAgreeIndex[i]
+		
+						//log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+
+					}
+				}
+
+			}
+			kv.shardLocks[i].Unlock()
+		}
+
+		
+		
+		
+		
+		time.Sleep(time.Duration(10) * time.Millisecond)
+	}
+}
+
+func shouldStartAgreementWTF(shardCommandToSync Shard, shardLastSync Shard, index int, lastIncludedIndex int, counter int) bool{
+	if (shardCommandToSync.Config_Num != shardLastSync.Config_Num) || (shardCommandToSync.State != shardLastSync.State) {
+		return true
+	} else {
+		if lastIncludedIndex > index {
+			// meaning the current index of the server is bigger than the index we start agreement at 
+			// and the agreement has not been reached
+			return true
+		}
+		if counter >= 500 {
+			return true
+		}
+	}
+	// so shardCommandToSync = shardLastSync but the raft has not commited the shard command yet
+	return false
+}
+
+
+func (kv *ShardKV) syncShardUpdateMessagePerShard(i int) {
+
+	log.Printf("kvserver %d of gid %d, go routine syncShardUpdateMessagePerShard(%d) starts", kv.me, kv.gid, i)
+	//counter := 0
+	for {
+		kv.shardLocks[i].Lock()
+		/*if kv.shardToSync[i].Config_Num != -1 {
+			log.Printf("kvserver %d of gid %d, shard %d, shard to sync has config number %d, state %s, shardLastAgreeIndex %d, and lastIncludeIndex %d, next operation on update buffer has config number %d, state %s", kv.me, kv.gid, i, kv.shardToSync[i].Config_Num, stateIntToString(kv.shardToSync[i].State), kv.shardLastAgreeIndex[i], kv.rf.GetLastApplied(), kv.shardUpdateBuffer[i][0].Config_Num, stateIntToString(kv.shardUpdateBuffer[i][0].State))
+			if shouldStartAgreementWTF(copyShard(kv.shardToSync[i]), copyShard(kv.shardLastAgreeCommand[i]), kv.shardLastAgreeIndex[i], kv.rf.GetLastApplied(), counter) {
+				opToRaft := Op{}
+				opToRaft.Operation = "Update_Shard"
+				opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
+
+		
+				_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+				if isLeader {
+					kv.shardLastAgreeCommand[i] = copyShard(kv.shardToSync[i])
+					kv.shardLastAgreeIndex[i] = index
+
+					counter = 0
+					log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+				} else {
+					
+					kv.shardLastAgreeCommand[i] = kv.shardLastAgreeCommand[i]
+					kv.shardLastAgreeIndex[i] = kv.shardLastAgreeIndex[i]
+
+					counter = counter + 10
+	
+					log.Printf("kvserver %d of gid %d, shard %d, is not leader so did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+
+				}
+			} else {
+				counter = counter + 10
+			}
+
+		}*/
+		if kv.shardToSync[i].Config_Num != -1 {
+			opToRaft := Op{}
+			opToRaft.Operation = "Update_Shard"
+			opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
+			_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+			if isLeader {
+
+				log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+			} else {
+
+				log.Printf("kvserver %d of gid %d, shard %d, did not start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+
+			}
+
+		}
+		kv.shardLocks[i].Unlock()
+		
+
+		
+		time.Sleep(time.Duration(500) * time.Millisecond)
+	}
+}
+
+
+func (kv *ShardKV) syncShardUpdateMessageWTF() {
+
+	log.Printf("kvserver %d of gid %d, go routine syncShardUpdateMessage() starts", kv.me, kv.gid)
+	for {
+
+		
+		for i := 0; i < shardmaster.NShards; i++ {
+			kv.shardLocks[i].Lock()
+			if kv.shardToSync[i].Config_Num != -1 {
+				
+				opToRaft := Op{}
+				opToRaft.Operation = "Update_Shard"
+				opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
+
+		
+				_, index, _, _ := kv.rf.StartQuick(opToRaft)
+				kv.shardLastAgreeCommand[i] = copyShard(kv.shardToSync[i])
+				kv.shardLastAgreeIndex[i] = index
+
+				log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+				
+
+			}
+			kv.shardLocks[i].Unlock()
+		}
+
+		
+		
+		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
@@ -1369,32 +2061,73 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 		var db []Shard
 		var configs []shardmaster.Config
 
+		var shardUpdateBuffer [][]Shard
+
+		var shardToSync []Shard
+
+		var shardLastAgreeCommand []Shard
+
+		var shardLastAgreeIndex []int
 		if d.Decode(&clients_Info) != nil ||
 			d.Decode(&db) != nil ||
-			d.Decode(&configs) != nil{
+			d.Decode(&configs) != nil ||
+			d.Decode(&shardUpdateBuffer) != nil ||
+			d.Decode(&shardToSync) != nil || 
+			d.Decode(&shardLastAgreeCommand) != nil ||
+			d.Decode(&shardLastAgreeIndex) != nil{
 			//log.Printf("could not read snapshot from raft for This kvserver %d. There is error in reading.", kv.me)
 			kv.lastIncludedIndex = default_sentinel_index
 			kv.lastIncludedTerm = default_start_term
 			kv.clients_Info = make(map[int64]*Client)
+
 			kv.db = make([]Shard, shardmaster.NShards)
 
+			kv.shardUpdateBuffer = make([][]Shard, shardmaster.NShards)
+
+			kv.shardToSync = make([]Shard, shardmaster.NShards)
+
+			kv.shardLastAgreeCommand = make([]Shard, shardmaster.NShards)
+			kv.shardLastAgreeIndex = make([]int, shardmaster.NShards)
+
 			for i := 0; i < shardmaster.NShards; i++ {
-				db[i] = Shard{}
-				db[i].Config_Num = 0
-				db[i].State = Garbage
-				db[i].Data = make(map[string]string)
+				kv.db[i] = Shard{}
+				kv.db[i].Config_Num = 0
+				kv.db[i].State = Garbage
+				kv.db[i].Data = make(map[string]string)
+
+				kv.shardUpdateBuffer[i] = make([]Shard, 0)
+
+				kv.shardToSync[i] = Shard{}
+				kv.shardToSync[i].Config_Num = -1
+
+				kv.shardLastAgreeCommand[i] = Shard{}
+				kv.shardLastAgreeCommand[i].Config_Num = -1
+
+				kv.shardLastAgreeIndex[i] = -1
+
 			}
 
 			kv.configs = make([]shardmaster.Config, 1)
 			kv.configs[0].Groups = map[int][]string{}
+
+
 			
 		} else {
+
 			kv.lastIncludedIndex = lastIncludedIndex
 			kv.lastIncludedTerm = lastIncludedTerm
 			kv.clients_Info = clients_Info
 			kv.db = db
 
 			kv.configs = configs
+
+			kv.shardUpdateBuffer = shardUpdateBuffer
+			kv.shardToSync = shardToSync
+
+			kv.shardLastAgreeCommand = shardLastAgreeCommand
+			kv.shardLastAgreeIndex = shardLastAgreeIndex
+		
+
 			kv.emptyOperationBuffer()
 		}
 
@@ -1403,12 +2136,30 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 		kv.lastIncludedTerm = default_start_term
 		kv.clients_Info = make(map[int64]*Client)
 
+		kv.shardUpdateBuffer = make([][]Shard, shardmaster.NShards)
+
+		kv.shardToSync = make([]Shard, shardmaster.NShards)
+
 		kv.db = make([]Shard, shardmaster.NShards)
+
+		kv.shardLastAgreeCommand = make([]Shard, shardmaster.NShards)
+		kv.shardLastAgreeIndex = make([]int, shardmaster.NShards)
 		for i := 0; i < shardmaster.NShards; i++ {
 			kv.db[i] = Shard{}
 			kv.db[i].Config_Num = 0
 			kv.db[i].State = Garbage
 			kv.db[i].Data = make(map[string]string)
+
+
+			kv.shardUpdateBuffer[i] = make([]Shard, 0)
+
+			kv.shardToSync[i] = Shard{}
+			kv.shardToSync[i].Config_Num = -1
+
+			kv.shardLastAgreeCommand[i] = Shard{}
+			kv.shardLastAgreeCommand[i].Config_Num = -1
+
+			kv.shardLastAgreeIndex[i] = -1
 		}
 
 		kv.configs = make([]shardmaster.Config, 1)
@@ -1419,30 +2170,58 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.indexBuffer = make([]int, 0)
 	kv.termBuffer = make([]int, 0)
 
-	kv.config_Update_Channels = make([]chan int, shardmaster.NShards)
-	kv.intermediate_Channels = make([]chan int, shardmaster.NShards)
+	kv.dataChan = make(chan Shard)
 
-	for j := 0; j < shardmaster.NShards; j++ {
-		kv.config_Update_Channels[j] = make(chan int)
-		//kv.intermediate_Channels[j] = make(chan int)
+	//kv.clientRequestQueue = make([]Op, 0)
+	//kv.clientRequestLastEmptyTime = time.Now()
+
+	//go kv.syncShardUpdateMessage()
+
+	for i := 0; i < shardmaster.NShards; i++ {
+		go kv.syncShardUpdateMessagePerShard(i)
 	}
 
-	go kv.fetchNewConfig()	
+	go kv.fetchNewConfigWTF()
+	//kv.fetchNewConfig()
 
-	for k := 0; k < shardmaster.NShards; k++ {
-		shardNum := k
-		go kv.migrateShard(shardNum, kv.config_Update_Channels[shardNum])
-	}
 
-	go func(kv *ShardKV) {	
+	//go kv.obtainDataPeriodically()
+
+	go kv.receiveData(kv.dataChan)
+
+
+
+	time.Sleep(100 * time.Millisecond)
+
+	go func(kv *ShardKV) {
 		
 		for applyMessage := range kv.applyCh {
 			kv.mu.Lock()
-			log.Printf("kvserver %d Locked", kv.me)
+			//log.Printf("kvserver %d of gid %d Locked", kv.me, kv.gid)
+
+			// todo :
+			
+			
+			// 1. put fetchNewConfig in here and determine we need to check based on time from last fetch
+			// 2. use a channel to receive data obtained from fetchdata and process the shardToSync here. we do it here
+			// before syncShardUpdateMessage() to prepare for agreement sync
+			// 3. put syncShardUpdateMessage() here. since we determine if we need to restart agreement based on
+			// the index of last agreement, we are totally safe here
+
+			// basic gist is to use less go routine that will require lock as possible
+			// so that the section that handles data reception does not compete for the lock with client operations
+		
+
+			
 			if kv.killed(){
 				kv.mu.Unlock()
 				return
 			} else {
+
+				kv.handleRequest(applyMessage)
+				//log.Printf("kvserver %d finished handling request", kv.me)
+				//log.Printf("kvserver %d unlocked", kv.me)
+
 				_, isLeader := kv.rf.GetState()
 				
 				if isLeader {
@@ -1455,14 +2234,46 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 							kv.tryInitSnapShot()
 						}
 					}
-					
-				}
-				kv.handleRequest(applyMessage)
-				log.Printf("kvserver %d finished handling request", kv.me)
-				//log.Printf("kvserver %d unlocked", kv.me)
-				kv.mu.Unlock()
+
+					/*for i := 0; i < shardmaster.NShards; i++ {
+						kv.shardLocks[i].Lock()
+						if kv.shardToSync[i].Config_Num != -1 {
+							if shouldStartAgreement(copyShard(kv.shardToSync[i]), copyShard(kv.shardLastAgreeCommand[i]), kv.shardLastAgreeIndex[i], kv.lastIncludedIndex) {
+								opToRaft := Op{}
+								opToRaft.Operation = "Update_Shard"
+								opToRaft.Shard_To_Update = copyShard(kv.shardToSync[i])
 				
+						
+								_, index, _, isLeader := kv.rf.StartQuick(opToRaft)
+								if isLeader {
+									kv.shardLastAgreeCommand[i] = copyShard(kv.shardToSync[i])
+									kv.shardLastAgreeIndex[i] = index
+					
+									log.Printf("kvserver %d of gid %d, shard %d, start agreement on state %s at version number %d at index %d", kv.me, kv.gid, i, stateIntToString(kv.shardToSync[i].State), kv.shardToSync[i].Config_Num, index)
+								}
+							}
+			
+						}
+						kv.shardLocks[i].Unlock()
+					}*/
+
+					/*timeLastConfig := kv.timeLastConfig
+
+	
+					timeToCheck := (timeLastConfig).Add(time.Duration(config_query_interval_millisecond) * time.Millisecond)	
+		
+					currentTime := time.Now()
+			
+					if (currentTime.After(timeToCheck)) {
+						log.Printf("kvserver %d of gid %d, try fetch configs", kv.me, kv.gid)
+						kv.fetchNewConfig()
+					}*/
+
+				}
+				//log.Printf("kvserver %d of gid %d unlocked", kv.me, kv.gid)
+				kv.mu.Unlock()
 			}
+
 		}
 	}(kv)
 
