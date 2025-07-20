@@ -111,6 +111,9 @@ func (ck *Clerk) Get(key string) string {
 					//log.Printf("Client %d got ErrWrongLeader for Get request with key %s to server %d in groups with gid %d with sequence number %d, try a different server at shard %d", ck.Client_Serial_Number, key, si, gid, args.Sequence_Number, shard)
 					continue
 				}
+				if ok && (reply.Err == ErrWrongGroupBeforeSync) {
+					continue
+				}
 
 				if ok && (reply.Err == ErrServerKilled) {
 					//log.Printf("Client %d got ErrServerKilled for Get request with key %s to server %d in groups with gid %d with sequence number %d, try a different server at shard %d", ck.Client_Serial_Number, key, si, gid, args.Sequence_Number, shard)
@@ -181,6 +184,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				}
 				if ok && (reply.Err == ErrWrongLeader) {
 					//log.Printf("Client %d got ErrWrongLeader for %s request with key %s and value %s to server %d in groups with gid %d with sequence number %d, try a different server at shard %d", ck.Client_Serial_Number, op, key, value, si, gid, args.Sequence_Number, shard)
+					continue
+				}
+
+				if ok && (reply.Err == ErrWrongGroupBeforeSync) {
 					continue
 				}
 

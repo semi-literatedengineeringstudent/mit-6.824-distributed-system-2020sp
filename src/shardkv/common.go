@@ -26,6 +26,9 @@ const (
 
 	ErrServerKilled  = "ErrServerKilled"
 
+	ErrWrongGroupBeforeSync = "ErrWrongGroupBeforeSync"
+	//meaning client configNumber not equal to highest server configNumber before server starts sync the command
+
 	Garbage = 0 // indicating the gid server currently not owning the shard, and the rightful owner has the shard so the owner simply cleared the shard
 	Pulling = 1 // indicating the gid server currently owns the shard but does not have it, so it is trying to pull the shard from the rightful owner from previous config
 	Serving = 2 // indicating the gid server currently owns the shard and has pulled it from the owner in previous config, and is now able to serve the data
