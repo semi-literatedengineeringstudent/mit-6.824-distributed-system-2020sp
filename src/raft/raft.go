@@ -133,6 +133,12 @@ type Reply struct {
 
 }
 
+func(rf *Raft) GetLastApplied() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	return rf.lastApplied
+}
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -151,6 +157,13 @@ func (rf *Raft) GetState() (int, bool) {
 	} 
 	//log.Printf("Raft server %d Unlocked GetState()", rf.me)
 	return term, isleader
+}
+
+func (rf *Raft) IsKilled() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	return rf.killed()
 }
 
 func (rf *Raft) GetStateWTF() (int, bool, int, int) {
@@ -1167,10 +1180,7 @@ func (rf *Raft) InitInstallSnapshot(LastIncludedIndex int, LastIncludedTerm int,
 	for i := 0; i < numberOfPeers; i++ {
 		serverIndex := i
 		if (serverIndex != leaderIndex) {
-
-
 			go rf.sendInstallSnapshotSingleServer(serverIndex)
-
 		}
 	}
 }
@@ -1306,7 +1316,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	//log.Printf("this server %d of term %d with sentinel_index %d, logStartIndex %d, and logEndIndex %d has received installShapShot rpc from leader %d, trim to %d ", rf.me, rf.currentTerm, rf.current_sentinel_index, rf.logStartIndex, rf.logEndIndex, args.LeaderId, args.LastIncludedIndex)
 
 
-	if (args.LastIncludedIndex < rf.logEndIndex) {
+	if (args.LastIncludedIndex < rf.logEndIndex && args.LastIncludedIndex >= rf.logStartIndex) {
 		
 		if rf.logs[args.LastIncludedIndex].Term == args.LastIncludedTerm {
 			//2, 3, 4, 5
@@ -1483,8 +1493,8 @@ func (rf *Raft) StartQuick(command interface{}) (int, int, int, bool) {
 	//log.Printf("Raft server %d StartQuick() Lock()", rf.me)
 
 	if rf.killed() {
-		rf.mu.Unlock()
-		//log.Printf("Raft server %d StartQuick() Unlock()", rf.me)
+		defer rf.mu.Unlock()
+		//log.Printf("Raft server %d is killed", rf.me)
 		return leaderId, invalid_index, invalid_term, false
 	}
 
@@ -1520,7 +1530,7 @@ func (rf *Raft) StartQuick(command interface{}) (int, int, int, bool) {
 		return leaderId, index, term, true
 	} else {
 		currentLeaderId := rf.currentLeaderId
-		rf.mu.Unlock()
+		defer rf.mu.Unlock()
 		//log.Printf("Raft server %d StartQuick() Unlock()", rf.me)
 		return currentLeaderId, index, term, false
 	}
@@ -1543,6 +1553,7 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 	//close(rf.applyChRaft)
+	//log.Printf("Raft %d is being killed", rf.me)
 }
 
 func (rf *Raft) killed() bool {
@@ -1648,9 +1659,6 @@ func (rf *Raft) syncCommitIndexAndLastApplied() {
 		} else {
 			rf.lastApplied = rf.current_sentinel_index
 		}
-		
-
-
 
 		//log.Printf("Raft server %d (term %d) finished applying commands from applyStart %d to applyEnd %d", rf.me, rf.currentTerm, applyStart, applyEnd)
 		
