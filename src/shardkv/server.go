@@ -314,11 +314,11 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 				kv.shardLocks[shard].Lock()
 				if len(kv.shardUpdateBuffer[shard]) == 0 {
 					// if the shard has finished updating
-					if kv.db[shard].Config_Num != Client_Config_Num {
+					/*if kv.db[shard].Config_Num != Client_Config_Num {
 						kv.shardLocks[shard].Unlock()
 						reply.Err = ErrWrongGroupBeforeSync
 						return
-					}
+					}*/
 					currentLeaderId, index, term, isLeader := kv.rf.StartQuick(opToRaft)
 
 					//log.Printf("kvserver %d of gid %d, start agreement on client get request at index %d", kv.me, kv.gid, index)
@@ -583,11 +583,11 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				if len(kv.shardUpdateBuffer[shard]) == 0 {
 					// if the shard has finished updating
 
-					if kv.db[shard].Config_Num != Client_Config_Num {
+					/*if kv.db[shard].Config_Num != Client_Config_Num {
 						kv.shardLocks[shard].Unlock()
 						reply.Err = ErrWrongGroupBeforeSync
 						return
-					}
+					}*/
 					currentLeaderId, index, term, isLeader := kv.rf.StartQuick(opToRaft)
 
 					//log.Printf("kvserver %d of gid %d, start agreement on client get request at index %d", kv.me, kv.gid, index)
@@ -1207,7 +1207,7 @@ func (kv *ShardKV) updateShard(updatedShard Shard) {
 	}
 
 	log.Printf("kvserver %d of gid %d, shard %d, try to update from state %s at config %d to state %s at config %d", kv.me, kv.gid, shardNum, stateIntToString(previousShard.State), previousShard.Config_Num, stateIntToString(updatedShard.State), updatedShard.Config_Num)
-
+	log.Printf("kvserver %d of gid %d, shard %d, the next expected state is state %s at config %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardUpdateBuffer[shardNum][0].State), kv.shardUpdateBuffer[shardNum][0].Config_Num)
 	if (kv.shardUpdateBuffer[shardNum][0].Config_Num == updatedShard.Config_Num) &&
 	(kv.shardUpdateBuffer[shardNum][0].State == updatedShard.State) {
 
@@ -1225,6 +1225,10 @@ func (kv *ShardKV) updateShard(updatedShard Shard) {
 			}
 			kv.shardLastAgreeCounter[shardNum] = 0
 
+			log.Printf("kvserver %d of gid %d, shard %d, successfully update from state %s at config %d to state %s at config %d", kv.me, kv.gid, shardNum, stateIntToString(previousShard.State), previousShard.Config_Num, stateIntToString(updatedShard.State), updatedShard.Config_Num)
+			if kv.shardToSync[shardNum].Config_Num != -1 {
+				log.Printf("kvserver %d of gid %d, shard %d, next shardToSync has state %s at version number %d", kv.me, kv.gid, shardNum, stateIntToString(kv.shardToSync[shardNum].State), kv.shardToSync[shardNum].Config_Num)
+			}
 			kv.shardLocks[shardNum].Unlock()
 		} else if updatedShard.State == Pulling {
 			kv.db[shardNum] = updatedShard
@@ -1358,6 +1362,8 @@ func (kv *ShardKV) updateShard(updatedShard Shard) {
 			kv.shardLocks[shardNum].Unlock()
 		}
 		
+	} else {
+		kv.shardLocks[shardNum].Unlock()
 	}
 
 }
@@ -1707,8 +1713,11 @@ func (kv *ShardKV) fetchNewConfigWTF() {
 
 func (kv *ShardKV) obtainDataPeriodically(shardNum int) {
 	for {
-		
+		if kv.killed() {
+			return
+		}
 		kv.shardLocks[shardNum].Lock()
+
 		if kv.db[shardNum].State == Pulling && kv.shardToSync[shardNum].Config_Num == -1 && kv.shardFetchStarted[shardNum] == not_started{
 			// if we have not received data yet, that is, the kv.db[shardNum].State == Pulling (meaning we are either pulling data or we have pulled and we wait for agreement)
 			// and kv.shardToSync[shardNum].Config_Num == -1, meaning we have yet to receive the data thus cannot start agreement on serving and
@@ -1852,7 +1861,6 @@ func (kv *ShardKV) syncShardUpdateMessagePerShard(i int) {
 			//log.Printf("kvserver %d of gid %d, shard %d, shard to sync has config number %d, state %s, shardLastAgreeCounter %d, and lastIncludeIndex %d, next operation on update buffer has config number %d, state %s", kv.me, kv.gid, i, kv.shardToSync[i].Config_Num, stateIntToString(kv.shardToSync[i].State), kv.shardLastAgreeCounter[i], kv.rf.GetLastApplied(), kv.shardUpdateBuffer[i][0].Config_Num, stateIntToString(kv.shardUpdateBuffer[i][0].State))
 			
 			_, isLeader1 := kv.rf.GetState()
-
 
 			if (wasLeader == false && isLeader1 == false) {
 				// was not leader and is not leader
@@ -2015,7 +2023,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 				//kv.shardLastAgreeCommand[i] = Shard{}
 				//kv.shardLastAgreeCommand[i].Config_Num = -1
 
-				kv.shardLastAgreeCounter[i] = -1
+				kv.shardLastAgreeCounter[i] = 0
 
 			}
 
@@ -2071,7 +2079,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 			//kv.shardLastAgreeCommand[i] = Shard{}
 			//kv.shardLastAgreeCommand[i].Config_Num = -1
 
-			kv.shardLastAgreeCounter[i] = -1
+			kv.shardLastAgreeCounter[i] = 0
 		}
 
 		kv.configs = make([]shardmaster.Config, 1)
